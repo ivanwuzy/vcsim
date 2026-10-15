@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import QRCode from "qrcode";
 import { assertAdmin, assertOrigin, cookieOptions, HttpError, rateLimit, sameSecret, sign, verify } from "../../../lib/security";
-import { adminAction, adminState, decide, eventMeta, getActiveEvent, getEvent, getRun, leaderboard, playerForToken, publicLeaderboard, publicMeta, register, result, startRun } from "../../../lib/service";
+import { adminAction, adminState, decide, eventMeta, getActiveEvent, getEvent, getRun, leaderboard, playerForToken, publicLeaderboard, publicMeta, register, replayEnabled, resetPlayer, result, startRun } from "../../../lib/service";
 import { getDb } from "../../../lib/db";
 
 export const runtime = "nodejs";
@@ -18,6 +18,7 @@ const projectSchema = z.object({ id: z.string().min(1).max(80), name: text, alia
   editorial: z.object({ manualCase: z.boolean(), sourceBook: z.string(), sourceRow: z.number().int(), sourceSha256: z.string(), prototypeTeam: z.string(), prototypeTechnology: z.string(), prototypeBusiness: z.string(), firstFunding: z.string(), cumulativeFunding: z.string(), trajectory: z.string(), stage: z.string(), informationBoundary: z.string() }).optional(),
   sensitivity: z.array(z.string().max(80)).min(1).max(8), sources: z.array(sourceSchema).max(12), review: z.enum(["draft", "approved"]), reviewedAt: z.string().nullable(), decisionEvidence: z.string().nullable(), family: z.string().max(80).optional() });
 const adminSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("replay-settings"), enabled: z.boolean() }),
   z.object({ action: z.literal("create"), title: text, mode: z.enum(["demo", "formal"]) }),
   z.object({ action: z.literal("settings"), title: text, topCount: z.number().int().min(1).max(100), luckyCount: z.number().int().min(1).max(100) }),
   z.object({ action: z.literal("import"), projects: z.array(projectSchema).length(50) }),
@@ -52,12 +53,21 @@ async function dispatch(request: NextRequest, context: { params: Promise<{ path:
     if (route === "session" && !post) {
       const event = await getActiveEvent();
       if (!event) return reply({ meta: null, player: null, run: null });
-      const meta = eventMeta(event);
+      const meta = { ...eventMeta(event), replayEnabled: await replayEnabled() };
       const token = playerTokens(request)[event.id];
       if (!token) return reply({ meta, player: null, run: null });
       try { const player = await playerForToken(token); const db = await getDb(); const run = (await db.query<{ id: string }>("SELECT id FROM runs WHERE player_id=$1", [player.id])).rows[0];
         return reply({ meta, player: { name: player.name, institution: player.institution }, run: run ? await getRun(run.id, token) : null });
       } catch (e) { if (e instanceof HttpError && e.status === 401) return reply({ meta, player: null, run: null }); throw e; }
+    }
+    if (route === "session/reset" && post) {
+      const { eventId } = z.object({ eventId: z.string().min(1).max(80) }).parse(await request.json());
+      const tokens = playerTokens(request), value = await resetPlayer(eventId, tokens[eventId]);
+      delete tokens[eventId];
+      const response = reply(value);
+      if (Object.keys(tokens).length) response.cookies.set("vc_players", sign(JSON.stringify(tokens)), cookieOptions);
+      else response.cookies.delete("vc_players");
+      return response;
     }
     if (route === "admin") {
       assertAdmin(request); const eventId = request.nextUrl.searchParams.get("event") || undefined;

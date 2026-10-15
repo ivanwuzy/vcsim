@@ -1,6 +1,8 @@
 import { test, expect, type Page } from "@playwright/test";
 import { PROJECTS } from "../data/projects";
 import { playerCard } from "../lib/cards";
+import { samplePath } from "../lib/engine";
+import { money } from "../lib/client";
 import type { RunView } from "../lib/types";
 
 const meta = { id: "mobile-ui", title: "手机界面验证", status: "open", mode: "demo", total: 50, initial: 200000000, ticket: 5000000, maxTicket: 40000000, maxInvestments: 20, endOnInvestmentLimit: true, settlementYear: 2031, eras: [{ title: "探索时代", text: "" }, { title: "成长时代", text: "" }, { title: "具身时代", text: "" }] };
@@ -231,9 +233,14 @@ test("native touch scroll reads short-screen clues and right swipe commits the s
 });
 
 test("settlement stays in one screen and opens complete reviews on demand", async ({ page }) => {
-  const reviews = PROJECTS.map((p, i) => ({ ...p, ...cards[i], choice: "pass", multiple: 1.2, profit: 1000000, ending: "模拟回报依据" }));
-  const run = { ...runAt(), status: "completed", index: 50, card: null };
-  const result = { profit: 0, value: 200000000, initial: 200000000, seen: 50, unseen: 0, completionReason: "timeline-end", invested: 0, unspent: 200000000, player: run.player, rank: 1, participants: 100, reviews, highlights: { best: null, avoided: reviews[0], missed: reviews[1] }, frozen: false };
+  const paths = PROJECTS.map(p => samplePath(p, "review-ui"));
+  const lossIndex = paths.findIndex(p => p.multipleBps < 10000);
+  expect(lossIndex).toBeGreaterThan(0);
+  const reviews = PROJECTS.map((p, i) => ({ ...p, ...cards[i], choice: i === 0 || i === lossIndex ? "invest" : "pass", amount: meta.ticket, multiple: paths[i].multipleBps / 10000, profit: Math.round(meta.ticket * paths[i].multipleBps / 10000) - meta.ticket, ending: paths[i].ending }));
+  const invested = reviews.filter(p => p.choice === "invest"), profit = invested.reduce((sum, p) => sum + p.profit, 0);
+  const unspent = meta.initial - invested.length * meta.ticket;
+  const run = { ...runAt(), status: "completed", index: 50, card: null, invested: invested.length, cash: unspent };
+  const result = { profit, value: meta.initial + profit, initial: meta.initial, seen: 50, unseen: 0, completionReason: "timeline-end", invested: invested.length, unspent, player: run.player, rank: 1, participants: 100, reviews, highlights: { best: reviews[0], avoided: null, missed: [...reviews].filter(p => p.choice === "pass" && p.profit > 0).sort((a, b) => b.profit - a.profit)[0] }, frozen: false };
   await page.route("**/api/**", route => {
     const path = new URL(route.request().url()).pathname;
     return route.fulfill({ json: path.endsWith("/result") ? result : path === "/api/session" ? { meta, run, player: run.player } : meta });
@@ -241,17 +248,62 @@ test("settlement stays in one screen and opens complete reviews on demand", asyn
   for (const size of [{ width: 375, height: 667 }, { width: 390, height: 664 }, { width: 390, height: 844 }, { width: 430, height: 932 }]) {
     await page.setViewportSize(size); await page.goto("/");
     await expect(page.getByRole("heading", { name: "选择有了回响。" })).toBeVisible();
+    await expect(page.locator(".highlight")).toHaveCount(2);
+    await expect(page.locator(".highlight > span")).toHaveText(["最成功的一笔", "已跳过的最大机会"]);
+    for (const [tone, project] of [["best", result.highlights.best], ["missed", result.highlights.missed]] as const) {
+      const highlight = page.locator(`.highlight-${tone}`);
+      await expect(highlight.locator("strong")).toHaveText(project.alias);
+      await expect(highlight.locator("small").first()).toHaveText(`参考原型：${project.name}`);
+      await expect(highlight.locator(".highlight-multiple")).toHaveText(`${project.multiple.toFixed(2)}× 投资回报`);
+    }
+    await expect(page.locator(".highlight-best")).toHaveCSS("background-color", "rgb(232, 246, 238)");
+    await expect(page.locator(".highlight-best > span")).toHaveCSS("color", "rgb(21, 134, 82)");
+    await expect(page.locator(".highlight-missed")).toHaveCSS("background-color", "rgb(251, 238, 240)");
+    await expect(page.locator(".highlight-missed > span")).toHaveCSS("color", "rgb(196, 62, 85)");
     const button = page.getByRole("button", { name: "查看 50 个项目复盘" });
     const box = (await button.boundingBox())!;
     expect(box.y + box.height).toBeLessThanOrEqual(size.height);
     expect(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1)).toBe(true);
-    if (size.width === 390 && size.height === 844) await page.screenshot({ path: "artifacts/result-iphone.png" });
+    if (size.width === 390 && size.height === 844) await page.screenshot({ path: "artifacts/settlement-two-highlights.png", animations: "disabled", style: "nextjs-portal { visibility: hidden; }" });
     await button.click();
     await expect(page.getByRole("dialog", { name: "项目复盘" })).toBeVisible();
     await expect(page.locator(".review")).toHaveCount(50);
-    await page.locator(".review-toggle").first().click();
-    await expect(page.locator(".review-detail")).toContainText("模拟回报依据");
+    const first = page.locator(".review-toggle").first();
+    await expect(first.locator(".review-name strong")).toHaveText(reviews[0].alias);
+    await expect(first.locator(".review-name small")).toHaveText(`参考原型：${reviews[0].name} · ${reviews[0].year} 年`);
+    await expect(first).toContainText(`${reviews[0].multiple.toFixed(2)}×`);
+    await expect(page.locator(".review-detail")).toHaveCount(0);
+    await expect(page.locator(".review-choice.invest")).toHaveText(["投", "投"]);
+    await expect(page.locator(".review-choice.pass")).toHaveCount(48);
+    await expect(page.locator(".review-choice.pass").first()).toHaveText("过");
+    await expect(page.locator(".review-choice.invest").first()).toHaveCSS("color", "rgb(21, 134, 82)");
+    await expect(page.locator(".review-choice.pass").first()).toHaveCSS("color", "rgb(196, 62, 85)");
+    await first.click();
+    await expect(first).toHaveAttribute("aria-expanded", "true");
+    const detail = page.locator(".review-detail");
+    await expect(detail.locator("label")).toHaveText(["本次投资", "净收益", "游戏内一句话介绍"]);
+    await expect(detail.locator("p")).toHaveText([`${money(meta.ticket)} 万元`, `${money(reviews[0].profit, 2)} 万元`, cards[0].pitch]);
+    await expect(detail.locator("a, .draft-note")).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (size.width === 390 && size.height === 844) await page.screenshot({ path: "artifacts/project-review-with-decisions.png", animations: "disabled", style: "nextjs-portal { visibility: hidden; }" });
+    await first.click();
+    await expect(detail).toHaveCount(0);
+    await page.locator(".review-toggle").nth(lossIndex).click();
+    await expect(detail.locator(".review-financials .negative")).toHaveText(`${money(reviews[lossIndex].profit, 2)} 万元`);
+    const skippedIndex = reviews.findIndex(p => p.choice === "pass");
+    await page.locator(".review-toggle").nth(skippedIndex).click();
+    await expect(detail.locator("p")).toHaveText(["0 万元", "0 万元", cards[skippedIndex].pitch]);
     await page.getByRole("button", { name: "关闭复盘" }).click();
     await expect(button).toBeVisible();
+    await page.getByRole("button", { name: "切换为深色" }).click();
+    await expect(page.locator(".highlight-best")).toHaveCSS("background-color", "rgb(24, 63, 50)");
+    await expect(page.locator(".highlight-best > span")).toHaveCSS("color", "rgb(116, 214, 161)");
+    await expect(page.locator(".highlight-missed")).toHaveCSS("background-color", "rgb(72, 40, 50)");
+    await expect(page.locator(".highlight-missed > span")).toHaveCSS("color", "rgb(255, 155, 176)");
+    await button.click();
+    await expect(page.locator(".review-choice.invest").first()).toHaveCSS("color", "rgb(116, 214, 161)");
+    await expect(page.locator(".review-choice.pass").first()).toHaveCSS("color", "rgb(255, 155, 176)");
+    await page.getByRole("button", { name: "关闭复盘" }).click();
+    await page.getByRole("button", { name: "切换为浅色" }).click();
   }
 });

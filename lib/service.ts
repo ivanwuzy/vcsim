@@ -61,6 +61,25 @@ export async function playerForToken(token: string | undefined, db?: DB): Promis
   const r = await (db ?? await getDb()).query<PlayerRow>("SELECT * FROM players WHERE token_hash=$1", [hash(token)]);
   if (!r.rows[0]) throw new HttpError(401, "身份已失效，请联系现场工作人员恢复。"); return r.rows[0];
 }
+export async function replayEnabled(db?: DB) {
+  await ensureSeed();
+  return (await (db ?? await getDb()).query<{ replay_enabled: boolean }>("SELECT replay_enabled FROM game_settings WHERE id=1")).rows[0].replay_enabled;
+}
+export async function resetPlayer(eventId: string, token?: string) {
+  await ensureSeed();
+  return transaction(async db => {
+    // Match admin switches and decisions so resets cannot race a stopped activity.
+    await db.query("SELECT pg_advisory_xact_lock(20261028)");
+    if (!await replayEnabled(db)) throw new HttpError(403, "再玩一次暂未开放。");
+    const event = await getEvent(eventId, db, true);
+    if (event.status !== "open") throw new HttpError(409, "活动已停止或已切换，请进入当前活动。");
+    const player = token ? (await db.query<PlayerRow>("SELECT * FROM players WHERE event_id=$1 AND token_hash=$2 FOR UPDATE", [event.id, hash(token)])).rows[0] : null;
+    if (!player) return { ok: true, eventId: event.id, runId: null };
+    const runs = await db.query<{ id: string }>("DELETE FROM runs WHERE player_id=$1 RETURNING id", [player.id]);
+    await db.query("DELETE FROM players WHERE id=$1", [player.id]);
+    return { ok: true, eventId: event.id, runId: runs.rows[0]?.id ?? null };
+  });
+}
 export function identity(name: string, institution: string) { return `${name.normalize("NFKC").replace(/\s+/g, "").toLocaleLowerCase()}|${institution.normalize("NFKC").replace(/\s+/g, "").toLocaleLowerCase()}`; }
 export async function register(eventId: string, name: string, institution: string, currentToken?: string, recovery?: string) {
   await ensureSeed();
@@ -186,18 +205,25 @@ export async function adminState(eventId?: string) {
   const activeEventId = events.find(e => e.status === "open")?.id ?? null;
   const event = events.length ? await getEvent(eventId) : null;
   const publicUrl = process.env.PUBLIC_URL || "http://localhost:3000";
-  if (!event) return { event: null, events, activeEventId, players: [], draws: [], audits: [], leaderboard: [], issues: [], publicUrl };
+  const replay = { replayEnabled: await replayEnabled(db) };
+  if (!event) return { event: null, events, activeEventId, players: [], draws: [], audits: [], leaderboard: [], issues: [], publicUrl, ...replay };
   const players = (await db.query<{ id: string; name: string; institution: string; status: string | null; progress: number; profit: string | null }>(`SELECT p.id,p.name,p.institution,r.status,COALESCE(jsonb_array_length(r.decisions),0) AS progress,r.profit FROM players p LEFT JOIN runs r ON r.player_id=p.id WHERE p.event_id=$1 ORDER BY p.created_at`, [event.id])).rows;
   const draws = (await db.query("SELECT id,kind,candidates,winners,created_at FROM draws WHERE event_id=$1 ORDER BY created_at", [event.id])).rows;
-  const audits = (await db.query("SELECT action,detail,created_at FROM audit_log WHERE event_id=$1 ORDER BY created_at DESC LIMIT 30", [event.id])).rows;
-  return { event, events, activeEventId, players, draws, audits, leaderboard: await leaderboard(event), issues: contentIssues(event.snapshot.projects), publicUrl };
+  const audits = (await db.query("SELECT action,detail,created_at FROM audit_log WHERE event_id=$1 OR event_id IS NULL ORDER BY created_at DESC LIMIT 30", [event.id])).rows;
+  return { event, events, activeEventId, players, draws, audits, leaderboard: await leaderboard(event), issues: contentIssues(event.snapshot.projects), publicUrl, ...replay };
 }
-async function audit(db: DB, eventId: string, action: string, detail: unknown) { await db.query("INSERT INTO audit_log(id,event_id,action,detail) VALUES($1,$2,$3,$4)", [randomUUID(), eventId, action, JSON.stringify(detail)]); }
+async function audit(db: DB, eventId: string | null, action: string, detail: unknown) { await db.query("INSERT INTO audit_log(id,event_id,action,detail) VALUES($1,$2,$3,$4)", [randomUUID(), eventId, action, JSON.stringify(detail)]); }
 export async function adminAction(eventId: string | undefined, action: string, payload: Record<string, unknown>) {
   await ensureSeed();
   return transaction(async db => {
     // Serialize switches across processes before acquiring individual event locks.
     await db.query("SELECT pg_advisory_xact_lock(20261028)");
+    if (action === "replay-settings") {
+      if (typeof payload.enabled !== "boolean") throw new HttpError(422, "可见性设置必须为布尔值。");
+      await db.query("UPDATE game_settings SET replay_enabled=$1 WHERE id=1", [payload.enabled]);
+      await audit(db, null, action, { enabled: payload.enabled });
+      return { ok: true };
+    }
     if (action === "create") {
       const id = randomUUID(), mode = payload.mode === "formal" ? "formal" : "demo";
       const { projects } = (await db.query<{ projects: Project[] }>("SELECT projects FROM game_settings WHERE id=1")).rows[0];
@@ -287,7 +313,7 @@ export function eventMeta(event: EventRow) {
 }
 export async function publicMeta() {
   const event = await getActiveEvent();
-  return event ? eventMeta(event) : null;
+  return event ? { ...eventMeta(event), replayEnabled: await replayEnabled() } : null;
 }
 export async function publicLeaderboard() {
   const event = await getActiveEvent();

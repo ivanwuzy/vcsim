@@ -18,14 +18,29 @@ async function screen(page: Page, getBoard: () => BoardData) {
 }
 
 test("players retain the public leaderboard and cannot enter the host screen", async ({ page }) => {
-  await page.route("**/api/leaderboard", route => route.fulfill({ json: board() }));
+  await page.route("**/api/leaderboard", route => route.fulfill({ json: board(8) }));
   await page.goto("/");
   await page.getByRole("link", { name: "排行榜", exact: true }).click();
-  await expect(page.locator(".board-table")).toContainText("201 x");
-  await expect(page.locator(".board-table")).toContainText("201亿元");
+  await expect(page.getByTestId("podium-card")).toHaveCount(3);
+  await expect(page.getByTestId("podium-card").first()).toContainText("201 x");
+  await expect(page.getByTestId("podium-card").first()).toContainText("201亿元");
+  await expect(page.locator(".board-table")).toContainText("合伙人 4");
+  await expect(page.locator(".board-table")).not.toContainText("林远");
   await expect(page.getByRole("link", { name: "打开现场大屏" })).toHaveCount(0);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: "artifacts/leaderboard-player-mobile.png", fullPage: true });
+  for (const size of [{ width: 320, height: 740 }, { width: 390, height: 844 }, { width: 1440, height: 1000 }]) {
+    await page.setViewportSize(size);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(await page.locator(".podium-art img").evaluateAll(images => images.every(img => (img as HTMLImageElement).naturalWidth > 0))).toBe(true);
+    for (const amount of await page.locator(".player-podium .podium-score strong").all()) {
+      expect(await amount.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    }
+    await page.evaluate(async () => {
+      await document.fonts.ready;
+      await Promise.all([...document.querySelectorAll<HTMLImageElement>(".podium-art img")].map(img => img.decode()));
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
+    await page.screenshot({ path: `artifacts/leaderboard-player-${size.width}.png`, fullPage: true, style: "nextjs-portal { visibility: hidden; }" });
+  }
   await page.goto("/leaderboard?screen=1");
   await expect(page).toHaveURL(`${origin}/leaderboard`);
   await expect(page.locator(".live-screen")).toHaveCount(0);
@@ -35,6 +50,22 @@ test("players retain the public leaderboard and cannot enter the host screen", a
     await expect(page.getByLabel("管理密码")).toBeVisible();
     await expect(page.locator(".live-screen")).toHaveCount(0);
   }
+});
+
+test("the public board highlights every tied top-three player and keeps its empty state", async ({ page }) => {
+  await page.clock.install();
+  let current = { ...board(5), rows: [makePlayer(1), makePlayer(2), makePlayer(3), makePlayer(4, 3, 198 * initial), makePlayer(5, 5)] };
+  await page.route("**/api/leaderboard", route => route.fulfill({ json: current }));
+  await page.goto("/leaderboard");
+  await expect(page.getByTestId("podium-card")).toHaveCount(4);
+  await expect(page.locator(".player-podium .medal-3")).toHaveCount(2);
+  await expect(page.locator(".player-podium .medal-3").first()).toContainText("并列第 3 名");
+  await expect(page.locator(".player-podium .medal-3").last()).toContainText("合伙人 4");
+  await expect(page.locator(".board-table tbody tr")).toHaveCount(1);
+  current = { ...current, rows: [] };
+  await page.clock.runFor(5200);
+  await expect(page.getByTestId("podium-card")).toHaveCount(0);
+  await expect(page.getByText("第一位合伙人还在做决定。")).toBeVisible();
 });
 
 test("the host console opens a protected independent screen", async ({ page }) => {

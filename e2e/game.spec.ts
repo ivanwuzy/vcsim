@@ -43,7 +43,7 @@ test("mobile full run, swipe, lost response recovery, result reveal and host clo
   await expect(page.getByRole("heading", { name: "选择有了回响。" })).toBeVisible();
   await page.getByRole("button", { name: "查看 50 个项目复盘" }).click();
   await expect(page.locator(".review")).toHaveCount(50); await page.locator(".review-toggle").first().click();
-  await expect(page.locator(".review-detail")).toContainText("本局回报依据");
+  await expect(page.locator(".review-detail")).toContainText("游戏内一句话介绍");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: "artifacts/result-mobile.png", fullPage: true });
   await page.getByRole("button", { name: "关闭复盘" }).click();
@@ -167,7 +167,7 @@ test("variable tickets deduct the displayed amount and settle a mixed twenty-pro
   expect(final.invested).toBe(20); expect(final.seen).toBe(21); expect(final.unspent).toBe(60_000_000);
   expect(final.reviews.filter((r: { choice: string }) => r.choice === "invest").map((r: { amount: number }) => r.amount)).toEqual([10_000_000, 40_000_000, ...Array(18).fill(5_000_000)]);
   await page.getByRole("button", { name: "查看 21 个项目复盘" }).click(); await page.locator(".review-toggle").first().click();
-  await expect(page.locator(".review-detail")).toContainText("本次投资 1,000 万元");
+  await expect(page.locator(".review-financials > div").first()).toHaveText("本次投资1,000 万元");
 });
 
 test("exhausting principal caps the last ticket and settles immediately", async ({ page, request }) => {

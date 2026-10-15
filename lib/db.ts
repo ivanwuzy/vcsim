@@ -3,7 +3,7 @@ import { Pool, type PoolClient } from "pg";
 import { mkdir } from "node:fs/promises";
 
 export type DB = { query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: T[] }> };
-type State = { db?: DB; local?: PGlite; pool?: Pool; ready?: Promise<void>; schemaReady?: Promise<void>; queue: Promise<void> };
+type State = { db?: DB; local?: PGlite; pool?: Pool; ready?: Promise<void>; schemaReady?: Promise<void>; schemaVersion?: string; queue: Promise<void> };
 const globalDb = globalThis as typeof globalThis & { vcDb?: State };
 const state = globalDb.vcDb ??= { queue: Promise.resolve() };
 const schema = `
@@ -38,6 +38,7 @@ CREATE INDEX IF NOT EXISTS runs_event_status ON runs(event_id, status);
 CREATE TABLE IF NOT EXISTS game_settings (
  id INTEGER PRIMARY KEY CHECK (id=1), content_version TEXT NOT NULL, projects JSONB NOT NULL
 );
+ALTER TABLE game_settings ADD COLUMN IF NOT EXISTS replay_enabled BOOLEAN NOT NULL DEFAULT FALSE;
 -- Older versions allowed multiple open events. Preserve their data and stop all but one.
 UPDATE events SET status='closed' WHERE status='open' AND id <> (
  SELECT id FROM events WHERE status='open' ORDER BY created_at DESC, id DESC LIMIT 1
@@ -57,6 +58,7 @@ async function init() {
 export async function getDb(): Promise<DB> {
   state.ready ??= init(); await state.ready;
   // Hot reload can retain a connection initialized by the previous version.
+  if (state.schemaVersion !== "2026.10-replay") { state.schemaReady = undefined; state.schemaVersion = "2026.10-replay"; }
   state.schemaReady ??= (async () => { if (state.local) await state.local.exec(schema); else await state.pool!.query(schema); })();
   try { await state.schemaReady; }
   catch (error) { state.schemaReady = undefined; throw error; }
