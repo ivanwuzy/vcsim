@@ -1,0 +1,240 @@
+import { beforeAll, describe, expect, it } from "vitest";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
+import { adminAction, adminState, decide, ensureSeed, getActiveEvent, getEvent, getRun, leaderboard, publicLeaderboard, publicMeta, register, result, startRun } from "../lib/service";
+import { getDb } from "../lib/db";
+let eventId: string;
+beforeAll(async () => {
+  process.env.PGLITE_PATH = await mkdtemp(`${tmpdir()}/vc-test-`);
+  process.env.APP_MODE = "demo"; eventId = (await getEvent()).id;
+});
+describe("persistent event lifecycle", () => {
+  it("recovers the same run, rejects impersonation, out-of-order and altered retries", async () => {
+    const a = await register(eventId, "甲", "机构A"), b = await register(eventId, "乙", "机构B");
+    await expect(register(eventId, " 甲 ", "机构A")).rejects.toThrow("已登记");
+    const r = await startRun(eventId, a.token); expect((await startRun(eventId, a.token)).id).toBe(r.id);
+    await expect(getRun(r.id, b.token)).rejects.toThrow("游戏不存在");
+    await expect(decide(r.id, a.token, { projectId: "future", choice: "invest", key: randomUUID() })).rejects.toThrow("顺序");
+    const d = { projectId: r.card!.id, choice: "invest" as const, key: randomUUID() };
+    const replies = await Promise.all([decide(r.id, a.token, d), decide(r.id, a.token, d)]);
+    expect(replies.map(r => r.index)).toEqual([1, 1]);
+    await expect(decide(r.id, a.token, { ...d, choice: "pass" })).rejects.toThrow("内容");
+    await expect(result(r.id, a.token)).rejects.toThrow("全部项目");
+    expect(JSON.stringify(await getRun(r.id, a.token))).not.toMatch(/multipleBps|sources|history|deck_id|paths|token_hash/);
+    const { code } = await adminAction(eventId, "recovery", { playerId: a.player.id }) as { code: string };
+    const restored = await register(eventId, "甲", "机构A", undefined, code);
+    expect((await startRun(eventId, restored.token)).index).toBe(1);
+    await expect(getRun(r.id, a.token)).rejects.toThrow("失效");
+    await expect(register(eventId, "甲", "机构A", undefined, code)).rejects.toThrow("已登记");
+  });
+  it("settles on investment 20 immediately, hides subsequent projects and handles duplicate final submissions", async () => {
+    const created = await adminAction(eventId, "create", { title: "20家上限", mode: "demo" }) as { eventId: string };
+    await adminAction(created.eventId, "open", {});
+    const player = await register(created.eventId, "上限玩家", "机构");
+    let r = await startRun(created.eventId, player.token);
+    for (let i = 0; i < 19; i++) r = await decide(r.id, player.token, { projectId: r.card!.id, choice: "invest", key: randomUUID() });
+    const last = { projectId: r.card!.id, choice: "invest" as const, key: randomUUID() };
+    const replies = await Promise.all([decide(r.id, player.token, last), decide(r.id, player.token, last)]);
+    r = replies[0]; expect(replies[1]).toEqual(r);
+    expect(r.invested).toBe(20); expect(r.index).toBe(20); expect(r.status).toBe("completed");
+    expect(r.card).toBeNull(); expect(r.year).toBe(2031);
+    const futureId = (await getEvent(created.eventId)).snapshot.decks[0].ids[20];
+    await expect(decide(r.id, player.token, { projectId: futureId, choice: "invest", key: randomUUID() })).rejects.toThrow("已完成");
+    const final = await result(r.id, player.token);
+    expect(final.invested).toBe(20); expect(final.unspent).toBe(0); expect(final.reviews).toHaveLength(20);
+    expect(final.seen).toBe(20); expect(final.unseen).toBe(30); expect(final.completionReason).toBe("investment-limit");
+    expect(final.reviews.every(p => p.choice === "invest")).toBe(true);
+    expect(final.highlights.missed).toBeNull();
+    expect(JSON.stringify(final)).not.toContain(futureId);
+    expect(r.value).toBe(final.value); expect((await getRun(r.id, player.token)).card).toBeNull();
+    const small = await register(created.eventId, "少投玩家", "机构");
+    let few = await startRun(created.eventId, small.token);
+    for (let i = 0; i < 50; i++) few = await decide(few.id, small.token, { projectId: few.card!.id, choice: i === 0 ? "invest" : "pass", key: randomUUID() });
+    const fewResult = await result(few.id, small.token);
+    expect(fewResult.invested).toBe(1); expect(fewResult.unspent).toBe(95_000_000);
+    expect(fewResult.value).toBe(100_000_000 + fewResult.reviews[0].profit);
+    expect(fewResult.reviews).toHaveLength(50); expect(fewResult.completionReason).toBe("timeline-end");
+    await adminAction(created.eventId, "close", {}); await adminAction(created.eventId, "freeze", {});
+    const draw = await adminAction(created.eventId, "draw", { key: randomUUID(), count: 10 }) as { winners: { playerId: string }[] };
+    expect(draw.winners.map(p => p.playerId)).toContain(player.player.id);
+  });
+  it("gives all players the same timeline and allows waiting until the last opportunity", async () => {
+    const created = await adminAction(undefined, "create", { title: "等待后续项目", mode: "demo" }) as { eventId: string };
+    await adminAction(created.eventId, "open", {});
+    const a = await register(created.eventId, "等待者", "基金"), b = await register(created.eventId, "观察者", "基金");
+    let r = await startRun(created.eventId, a.token), other = await startRun(created.eventId, b.token);
+    for (let i = 0; i < 50; i++) {
+      expect(r.card!.id).toBe(other.card!.id);
+      r = await decide(r.id, a.token, { projectId: r.card!.id, choice: i === 49 ? "invest" : "pass", key: randomUUID() });
+      other = await decide(other.id, b.token, { projectId: other.card!.id, choice: "pass", key: randomUUID() });
+      if (i === 48) expect(r.status).toBe("playing");
+    }
+    const waited = await result(r.id, a.token), passed = await result(other.id, b.token);
+    expect(waited.seen).toBe(50); expect(waited.unseen).toBe(0); expect(waited.invested).toBe(1);
+    expect(passed.value).toBe(100_000_000); expect(passed.profit).toBe(0); expect(passed.unspent).toBe(100_000_000);
+    expect(passed.reviews).toHaveLength(50);
+  });
+  it("freezes immutable standings and only draws completed, unique players across batches", async () => {
+    await adminAction(eventId, "open", {});
+    const players: Awaited<ReturnType<typeof register>>[] = [];
+    for (let i = 0; i < 5; i++) {
+      const player = await register(eventId, `完成者${i}`, "机构"), initial = await startRun(eventId, player.token); let r = initial;
+      for (let j = 0; j < 50; j++) r = await decide(r.id, player.token, { projectId: r.card!.id, choice: "pass", key: randomUUID() });
+      expect(r.status).toBe("completed"); expect((await result(r.id, player.token)).profit).toBe(0); players.push(player);
+    }
+    const incomplete = await register(eventId, "未完成", "机构"), r = await startRun(eventId, incomplete.token);
+    await adminAction(eventId, "close", {});
+    await expect(register(eventId, "新来者", "机构")).rejects.toThrow("停止登记");
+    await expect(decide(r.id, incomplete.token, { projectId: r.card!.id, choice: "pass", key: randomUUID() })).rejects.toThrow("已停止");
+    expect((await getRun(r.id, incomplete.token)).index).toBe(0);
+    await adminAction(eventId, "freeze", {}); const frozen = await leaderboard(await getEvent(eventId));
+    await expect(decide(r.id, incomplete.token, { projectId: r.card!.id, choice: "invest", key: randomUUID() })).rejects.toThrow("冻结");
+    const key = randomUUID(), first = await adminAction(eventId, "draw", { key, count: 2 }) as { winners: { playerId: string }[]; candidates: { playerId: string }[] };
+    const replay = await adminAction(eventId, "draw", { key, count: 2 }) as typeof first;
+    expect(replay.winners).toEqual(first.winners); expect(first.candidates).toHaveLength(5);
+    const second = await adminAction(eventId, "draw", { key: randomUUID(), count: 10 }) as typeof first;
+    expect(second.winners).toHaveLength(3); expect(new Set([...first.winners, ...second.winners].map(w => w.playerId)).size).toBe(5);
+    expect(await leaderboard(await getEvent(eventId))).toEqual(frozen);
+    const tie = await adminAction(eventId, "tie", { key: randomUUID() }) as typeof first; expect(tie.winners).toHaveLength(3);
+    await adminAction(eventId, "rename", { playerId: players[0].player.id, name: "已纠正", institution: "新机构" });
+    expect((await leaderboard(await getEvent(eventId))).find(p => p.playerId === players[0].player.id)?.name).toBe("已纠正");
+  });
+  it("uses the v3 bank for new activities and accepts overseas imports", async () => {
+    const created = await adminAction(eventId, "create", { title: "国内题库验证", mode: "demo" }) as { eventId: string };
+    const projects = (await getEvent(created.eventId)).snapshot.projects;
+    expect(projects).toHaveLength(50);
+    expect(projects.filter(p => p.market === "overseas")).toHaveLength(2);
+    await expect(adminAction(created.eventId, "import", { projects: projects.map((p, i) => i === 0 ? { ...p, market: "invalid" } : p) })).rejects.toThrow();
+    await adminAction(created.eventId, "import", { projects });
+  });
+  it("preserves played snapshots and permits formal activities with draft sources", async () => {
+    await expect(adminAction(eventId, "import", { projects: (await getEvent(eventId)).snapshot.projects })).rejects.toThrow("只能导入");
+    const created = await adminAction(eventId, "create", { title: "正式活动", mode: "formal" }) as { eventId: string };
+    await adminAction(created.eventId, "open", {});
+    expect((await publicMeta())?.id).toBe(created.eventId);
+    expect((await adminState(created.eventId)).issues).toContain("50题尚未通过审校或缺少同期证据。");
+    const state = await adminState(eventId); expect(state.draws).toHaveLength(3);
+    expect((await (await getDb()).query("SELECT * FROM audit_log")).rows.length).toBeGreaterThan(0);
+  });
+  it("creates drafts without switching visitors, switches exclusively and isolates standings", async () => {
+    const active = (await getActiveEvent())!;
+    const a = await register(active.id, "共享名字", "共享机构");
+    let r = await startRun(active.id, a.token);
+    for (let i = 0; i < 50; i++) r = await decide(r.id, a.token, { projectId: r.card!.id, choice: "pass", key: randomUUID() });
+    const created = await adminAction(undefined, "create", { title: "新测试场次", mode: "demo" }) as { eventId: string };
+    expect((await publicMeta())?.id).toBe(active.id);
+    expect((await publicLeaderboard()).rows).toHaveLength(1);
+    await adminAction(created.eventId, "open", {});
+    expect((await getEvent(active.id)).status).toBe("closed");
+    expect((await publicMeta())?.id).toBe(created.eventId);
+    expect((await publicLeaderboard()).rows).toEqual([]);
+    expect(await leaderboard(await getEvent(active.id))).toHaveLength(1);
+    const b = await register(created.eventId, "共享名字", "共享机构");
+    expect(b.player.id).not.toBe(a.player.id);
+    await expect(startRun(created.eventId, a.token)).rejects.toThrow("不匹配");
+    await expect(startRun(active.id, a.token)).rejects.toThrow("已停止");
+    const snapshot = (await getEvent(active.id)).snapshot;
+    await adminAction(active.id, "open", {});
+    expect((await getEvent(active.id)).snapshot).toEqual(snapshot);
+    expect((await publicLeaderboard()).rows).toHaveLength(1);
+  });
+  it("serializes concurrent activation and enforces the invariant in the database", async () => {
+    const first = await adminAction(undefined, "create", { title: "并发一", mode: "demo" }) as { eventId: string };
+    const second = await adminAction(undefined, "create", { title: "并发二", mode: "demo" }) as { eventId: string };
+    await Promise.all([adminAction(first.eventId, "open", {}), adminAction(second.eventId, "open", {})]);
+    const db = await getDb();
+    expect((await db.query("SELECT id FROM events WHERE status='open'")).rows).toHaveLength(1);
+    await expect(db.query("UPDATE events SET status='open' WHERE id=$1", [first.eventId])).rejects.toThrow();
+    expect((await getActiveEvent())?.id).toBe(second.eventId);
+  });
+  it("uses the latest imported bank at creation and first activation while preserving played content", async () => {
+    const draft = await adminAction(undefined, "create", { title: "题库迭代", mode: "demo" }) as { eventId: string };
+    const waiting = await adminAction(undefined, "create", { title: "已创建待启动", mode: "formal" }) as { eventId: string };
+    const active = (await getActiveEvent())!;
+    const original = active.snapshot;
+    const projects = (await getEvent(draft.eventId)).snapshot.projects.map((p, i) => i === 0 ? { ...p, alias: "持续优化后的题目", reviewedAt: null, decisionEvidence: null, review: "draft" as const } : p);
+    await adminAction(draft.eventId, "import", { projects });
+    const next = await adminAction(undefined, "create", { title: "最新题库活动", mode: "formal" }) as { eventId: string };
+    expect((await getEvent(next.eventId)).snapshot.projects).toEqual(projects);
+    await adminAction(waiting.eventId, "open", {});
+    expect((await getEvent(waiting.eventId)).snapshot.projects).toEqual(projects);
+    expect((await getEvent(active.id)).snapshot).toEqual(original);
+  });
+  it("can restart frozen activities, retaining progress and clearing obsolete awards", async () => {
+    const before = await getEvent(eventId);
+    const rows = await leaderboard(before);
+    expect((await adminState(eventId)).draws).toHaveLength(3);
+    await adminAction(eventId, "open", {});
+    expect((await getEvent(eventId)).frozen_rows).toBeNull();
+    expect((await adminState(eventId)).draws).toEqual([]);
+    expect((await getEvent(eventId)).snapshot).toEqual(before.snapshot);
+    expect(await leaderboard(await getEvent(eventId))).toEqual(rows);
+    const db = await getDb();
+    const unfinished = (await db.query<{ id: string }>("SELECT id FROM players WHERE event_id=$1 AND name='未完成'", [eventId])).rows[0];
+    const { code } = await adminAction(eventId, "recovery", { playerId: unfinished.id }) as { code: string };
+    const player = await register(eventId, "未完成", "机构", undefined, code);
+    const run = await startRun(eventId, player.token);
+    expect((await decide(run.id, player.token, { projectId: run.card!.id, choice: "pass", key: randomUUID() })).index).toBe(1);
+  });
+  it("upgrades unplayed timelines on rule hot reload without overwriting imported or played content", async () => {
+    const created = await adminAction(undefined, "create", { title: "规则升级草稿", mode: "demo" }) as { eventId: string };
+    const draft = await getEvent(created.eventId), active = (await getActiveEvent())!;
+    const player = await register(active.id, "旧规则保留", "基金");
+    const run = await startRun(active.id, player.token);
+    const oldDraft = structuredClone(draft.snapshot), oldPlayed = structuredClone(active.snapshot);
+    for (const snapshot of [oldDraft, oldPlayed]) {
+      snapshot.version = "2026.10-domestic-v2";
+      snapshot.rules!.total = 25; delete snapshot.rules!.endOnInvestmentLimit;
+      snapshot.decks[0].ids = snapshot.decks[0].ids.slice(0, 25);
+    }
+    const db = await getDb();
+    await db.query("UPDATE events SET snapshot=$1 WHERE id=$2", [JSON.stringify(oldDraft), draft.id]);
+    await db.query("UPDATE events SET snapshot=$1 WHERE id=$2", [JSON.stringify(oldPlayed), active.id]);
+    const globals = globalThis as typeof globalThis & { vcSeed?: Promise<void>; vcSeedVersion?: string };
+    globals.vcSeed = Promise.resolve(); globals.vcSeedVersion = "previous-rule-version";
+    await ensureSeed();
+    expect((await getEvent(draft.id)).snapshot.rules?.total).toBe(50);
+    expect((await getEvent(draft.id)).snapshot.projects).toEqual(oldDraft.projects);
+    expect((await getEvent(active.id)).snapshot).toEqual(oldPlayed);
+    let resumed = await getRun(run.id, player.token);
+    for (let i = 0; i < 20; i++) resumed = await decide(resumed.id, player.token, { projectId: resumed.card!.id, choice: "invest", key: randomUUID() });
+    expect(resumed.status).toBe("playing"); expect(resumed.card).not.toBeNull();
+    for (let i = 20; i < 25; i++) resumed = await decide(resumed.id, player.token, { projectId: resumed.card!.id, choice: "pass", key: randomUUID() });
+    expect(resumed.status).toBe("completed");
+    expect((await result(resumed.id, player.token)).reviews).toHaveLength(25);
+    const bank = (await db.query<{ projects: unknown[] }>("SELECT projects FROM game_settings WHERE id=1")).rows[0].projects;
+    expect(bank).toEqual(draft.snapshot.projects);
+  });
+  it("deletes related data and supports an empty activity list without automatic reseeding", async () => {
+    const active = (await getActiveEvent())!;
+    await adminAction(active.id, "delete", {});
+    expect(await publicMeta()).toBeNull();
+    expect((await publicLeaderboard()).rows).toEqual([]);
+    const db = await getDb();
+    for (const table of ["events", "players", "runs", "draws"]) {
+      const column = table === "events" ? "id" : "event_id";
+      expect((await db.query(`SELECT * FROM ${table} WHERE ${column}=$1`, [active.id])).rows).toEqual([]);
+    }
+    for (const event of (await adminState()).events) await adminAction(event.id, "delete", {});
+    const globals = globalThis as typeof globalThis & { vcSeed?: Promise<void> };
+    globals.vcSeed = undefined;
+    await ensureSeed();
+    const empty = await adminState();
+    expect(empty.event).toBeNull(); expect(empty.events).toEqual([]); expect(await getActiveEvent()).toBeNull();
+    const created = await adminAction(undefined, "create", { title: "删除后新测试", mode: "formal" }) as { eventId: string };
+    expect((await getEvent(created.eventId)).snapshot.projects[0].alias).toBe("持续优化后的题目");
+    await adminAction(created.eventId, "open", {});
+    expect((await publicMeta())?.id).toBe(created.eventId);
+    await adminAction(created.eventId, "close", {});
+    expect(await publicMeta()).toBeNull();
+  });
+  it("recovers from an initialization failure retained during hot reload", async () => {
+    const globals = globalThis as typeof globalThis & { vcSeed?: Promise<void> };
+    globals.vcSeed = Promise.reject(new Error("旧版初始化失败"));
+    await expect(ensureSeed()).rejects.toThrow("旧版初始化失败");
+    await ensureSeed();
+    expect((await adminState()).events).toHaveLength(1);
+  });
+
+});

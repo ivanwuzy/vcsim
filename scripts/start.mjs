@@ -1,0 +1,14 @@
+import { cp, mkdir } from "node:fs/promises";
+import { resolve } from "node:path";
+import { spawn } from "node:child_process";
+import nextEnv from "@next/env";
+nextEnv.loadEnvConfig(process.cwd());
+const root = process.cwd();
+await mkdir(".next/standalone/.next", { recursive: true });
+await cp(".next/static", ".next/standalone/.next/static", { recursive: true });
+await cp("public", ".next/standalone/public", { recursive: true });
+const portFlag = process.argv.indexOf("--port");
+const port = portFlag >= 0 ? process.argv[portFlag + 1] : process.env.PORT || "3000";
+const child = spawn(process.execPath, [resolve(".next/standalone/server.js")], { stdio: "inherit", env: { ...process.env, PORT: port, HOSTNAME: "0.0.0.0", PGLITE_PATH: resolve(root, process.env.PGLITE_PATH || ".data/postgres") } });
+for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => child.kill(signal));
+child.on("exit", code => process.exit(code ?? 0));
