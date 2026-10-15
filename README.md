@@ -64,7 +64,7 @@ npm start
 
 生产站点为 https://vcsim.ootoday.top ，部署在 Vercel 的 `zyqfwyh/embodied-vc-simulator` 项目，数据库沿用已绑定的 Neon PostgreSQL。
 
-源码仓库为 [ivanwuzy/vcsim](https://github.com/ivanwuzy/vcsim)，公开可见。Vercel 的同一项目连接此 GitHub 仓库，以 `main` 为生产分支；推送到 `main` 后由 Vercel 自动构建和发布，沿用现有生产环境变量、Neon PostgreSQL 和域名。
+源码仓库为 [ivanwuzy/vcsim](https://github.com/ivanwuzy/vcsim)，公开可见。Vercel 的同一项目连接此 GitHub 仓库，以 `main` 为生产分支；推送到 `main` 后由 Vercel 自动构建和发布，沿用现有生产环境变量、Neon PostgreSQL 和域名。官方 Vercel GitHub App 的仓库授权范围仅为 `ivanwuzy/vcsim`。
 
 本地更新流程为 `git add <修改的文件>`、`git commit -m "描述修改"`、`git push origin main`。实际密钥保存在本地 `.env.local` 与 Vercel 环境变量中；`.gitignore` 排除本地环境变量、数据库、依赖、构建缓存与测试产物。仓库保留题库导入需要的 v3 原始 Excel，其他 `outputs` 研究产物和线上备份不提交。新环境可通过 `git clone https://github.com/ivanwuzy/vcsim.git` 获取项目，并执行 `npm ci`。
 
