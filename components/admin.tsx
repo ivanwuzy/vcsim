@@ -5,6 +5,7 @@ import type { adminState } from "../lib/service";
 import type { Project } from "../lib/types";
 import { api, money, uuid } from "../lib/client";
 import { Brand } from "./brand";
+import { pollVisible } from "../lib/poll";
 type State = Awaited<ReturnType<typeof adminState>>;
 const statuses: Record<string, string> = { draft: "未开放", open: "进行中", closed: "已停止", frozen: "榜单已冻结" };
 export default function Admin() {
@@ -14,13 +15,13 @@ export default function Admin() {
   const [newTitle, setNewTitle] = useState("");
   const [title, setTitle] = useState(""), [topCount, setTopCount] = useState(3), [luckyCount, setLuckyCount] = useState(5), [newMode, setNewMode] = useState("formal");
   const [search, setSearch] = useState(""), [category, setCategory] = useState("all"), [create, setCreate] = useState(false), [rename, setRename] = useState<{ id: string; name: string; institution: string } | null>(null);
-  async function refresh(id = eventId) {
+  async function refresh(id = eventId, polling = false) {
     try { const data = await api<State>(`/api/admin${id ? `?event=${id}` : ""}`); setState(data); setEventId(data.event?.id ?? ""); setLogged(true); if (data.event && (!state || state.event?.id !== data.event.id)) { setTitle(data.event.title); setTopCount(data.event.settings.topCount); setLuckyCount(data.event.settings.luckyCount); } }
-    catch (e) { if ((e as Error).message.includes("登录")) setLogged(false); else setError((e as Error).message); }
+    catch (e) { if ((e as Error).message.includes("登录")) setLogged(false); else setError((e as Error).message); if (polling) throw e; }
     finally { setLoading(false); }
   }
   useEffect(() => { void refresh(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { if (!logged) return; const t = setInterval(() => refresh(eventId), 10000); return () => clearInterval(t); }, [logged, eventId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!logged) return; return pollVisible(() => refresh(eventId, true), 10000, false); }, [logged, eventId]); // eslint-disable-line react-hooks/exhaustive-deps
   async function login(e: FormEvent) { e.preventDefault(); setBusy(true); setError(""); try { await api("/api/admin/login", { password }); setPassword(""); await refresh(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } }
   async function action(action: string, body: Record<string, unknown> = {}) {
     if (busy) return; setBusy(true); setError(""); setMessage("");

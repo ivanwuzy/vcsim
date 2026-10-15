@@ -1,5 +1,5 @@
 export async function api<T = unknown>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(path, { method: body === undefined ? "GET" : "POST", headers: body === undefined ? undefined : { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store" });
+  const response = await fetch(path, { method: body === undefined ? "GET" : "POST", headers: body === undefined ? undefined : { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body), cache: path === "/api/meta" ? "default" : "no-store" });
   const data = await response.json();
   if (!response.ok) throw new Error((data.error || "连接失败，请重试。") + (Array.isArray(data.details) ? ` ${data.details.join("；")}` : "")); return data as T;
 }

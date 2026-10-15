@@ -33,7 +33,7 @@ npm start
 - 所有玩家使用同一条完整时间线和固定收益路径。同年按稳定ID排序，种子不影响项目顺序或市场提示。v4.2使用decisionYear表示选定投资进入年份；旧题库兼容foundedYear、firstFundingYear和示例year。
 - 2031年统一模拟结算，压缩不同历史跨度；不预测真实2031估值。不计稀释、分红、税费、清算优先权或现金利息，倍数精度为万分之一。
 - 仅当前卡片通过玩家接口下发。HttpOnly签名Cookie持有玩家凭证；重复身份不会凭姓名自动接管，需要原设备或工作人员发放一次性恢复码。
-- 试用时可在后台“活动 → 试用设置”开启“再玩一次”，全局控制所有玩家的顶部按钮，默认隐藏。点击后清除本场实名登记、进度、成绩和设备上的本场游戏缓存，返回首页重新登记；可使用原姓名与机构重新开始。开关约3秒同步到已打开的玩家页面，关闭后服务端也禁止重置。
+- 试用时可在后台“活动 → 试用设置”开启“再玩一次”，全局控制所有玩家的顶部按钮，默认隐藏。点击后清除本场实名登记、进度、成绩和设备上的本场游戏缓存，返回首页重新登记；可使用原姓名与机构重新开始。开关约5–7秒同步到可见的玩家页面，关闭后服务端也禁止重置。
 - 幂等决策键与行锁防止并发重复提交。所有写操作检查Origin；后台登录限流、8小时会话，数据库不通过公开接口暴露。
 - 新建活动不会改变公共入口；启动任意活动会自动停止此前进行中的活动。首页、旧活动链接、二维码和公共榜单始终对应唯一进行中的活动。没有进行中的活动时显示等待提示，已打开页面自动更新。
 - 停止活动会暂停新登记和答题，保留已有进度与成绩；重新启动后可继续。冻结固定完成者排名供抽奖使用；重新启动已冻结活动时保留题目和成绩、解除冻结并清除旧抽奖结果。
@@ -63,9 +63,9 @@ npm start
 
 ## 部署
 
-生产站点为 https://vcsim.ootoday.top ，部署在 Vercel 的 `zyqfwyh/embodied-vc-simulator` 项目，数据库沿用已绑定的 Neon PostgreSQL。
+生产站点为 https://vcsim.ootoday.top ，部署在 Vercel 的 `zyqfwyh/embodied-vc-simulator` 项目，数据库使用 Supabase PostgreSQL（Seoul），通过官方集成同步平台配置，应用使用共享事务连接池。
 
-源码仓库为 [ivanwuzy/vcsim](https://github.com/ivanwuzy/vcsim)，公开可见。Vercel 的同一项目连接此 GitHub 仓库，以 `main` 为生产分支；推送到 `main` 后由 Vercel 自动构建和发布，沿用现有生产环境变量、Neon PostgreSQL 和域名。官方 Vercel GitHub App 的仓库授权范围仅为 `ivanwuzy/vcsim`。
+源码仓库为 [ivanwuzy/vcsim](https://github.com/ivanwuzy/vcsim)，公开可见。Vercel 的同一项目连接此 GitHub 仓库，以 `main` 为生产分支；推送到 `main` 后由 Vercel 自动构建和发布，沿用现有生产环境变量、Supabase PostgreSQL 和域名。官方 Vercel GitHub App 的仓库授权范围仅为 `ivanwuzy/vcsim`。
 
 本地更新流程为 `git add <修改的文件>`、`git commit -m "描述修改"`、`git push origin main`。实际密钥保存在本地 `.env.local` 与 Vercel 环境变量中；`.gitignore` 排除本地环境变量、数据库、依赖、构建缓存与测试产物。仓库保留题库导入需要的 v4.2 原始 Excel（另保留历史v3原表），其他 `outputs` 研究产物和线上备份不提交。新环境可通过 `git clone https://github.com/ivanwuzy/vcsim.git` 获取项目，并执行 `npm ci`。
 
@@ -74,3 +74,7 @@ npm start
 `deploy/`与compose配置保留为可选VPS方式；当前线上不使用该方案。
 
 活动主持操作见 `docs/活动操作说明.md`；当前验证范围见 `docs/验证记录.md`。
+
+Neon网络额度排查及百人访问预算见 [Neon成本排查与优化](docs/Neon成本排查与优化.md)。状态轮询只读取元数据；题库按数据库维护的内容版本缓存，每次仍读取活动状态。公共状态和公共榜单缓存2秒，登录会话、个人游戏和后台接口不使用公共缓存。隐藏标签页暂停轮询，网络失败后退避至最长60秒。Neon部署应使用带`-pooler`的连接地址；应用每个实例最多4条连接，空闲5秒释放。数据库的自动休眠仍取决于实际访问和平台设置。
+
+Supabase 使用端口6543的共享事务连接池，`DATABASE_SSL_CA` 配置从数据库设置下载的官方根证书 PEM，始终校验证书及主机名。保留原 `SESSION_SECRET` 与 `ADMIN_PASSWORD`，以延续玩家及后台会话。应用七张表启用RLS，撤销anon/authenticated权限，Data API保持关闭。迁移及恢复步骤见 [数据库迁移](docs/数据库迁移.md)。

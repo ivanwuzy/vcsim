@@ -5,6 +5,7 @@ import type { Choice, Decision, RunView } from "../lib/types";
 import type { result as serverResult } from "../lib/service";
 import { api, money, uuid } from "../lib/client";
 import { Brand } from "./brand";
+import { pollVisible } from "../lib/poll";
 type Result = Awaited<ReturnType<typeof serverResult>>;
 type Meta = { replayEnabled?: boolean; contentVersion?: string; yearBasis?: "entry" | "legacy"; id: string; title: string; status: string; mode: string; total: number; initial: number; ticket: number; maxTicket?: number; maxInvestments: number; endOnInvestmentLimit: boolean; settlementYear: number; eras: { title: string; text: string }[] };
 type Pending = Decision;
@@ -61,23 +62,19 @@ export default function Game() {
   }
   useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    const timer = setInterval(async () => {
+    return pollVisible(async () => {
       if (busy || loading) return;
-      try {
-        const current = await api<Meta | null>("/api/meta");
-        if ((current?.id ?? null) !== loadedEventId.current) await load();
-        else if (current) setMeta(previous => previous?.id === current.id ? { ...previous, replayEnabled: current.replayEnabled } : previous);
-      }
-      catch { /* Keep saved progress while the network is unavailable. */ }
-    }, 3000);
-    return () => clearInterval(timer);
+      const current = await api<Meta | null>("/api/meta");
+      if ((current?.id ?? null) !== loadedEventId.current) await load();
+      else if (current) setMeta(previous => previous?.id === current.id ? { ...previous, replayEnabled: current.replayEnabled } : previous);
+    }, 5000, false);
   }, [busy, loading]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!run || run.status !== "completed") return;
     let live = true;
-    const refresh = () => api<Result>(`/api/runs/${run.id}/result`).then(value => { if (live) setResult(value); }).catch(e => { if (live) setError(e.message); });
-    void refresh(); const timer = setInterval(refresh, 15000);
-    return () => { live = false; clearInterval(timer); };
+    const refresh = () => api<Result>(`/api/runs/${run.id}/result`).then(value => { if (live) setResult(value); }).catch(e => { if (live) setError(e.message); throw e; });
+    const stop = pollVisible(refresh, 30000);
+    return () => { live = false; stop(); };
   }, [run]);
   async function replay() {
     if (!meta?.replayEnabled || busy || lock.current) return;

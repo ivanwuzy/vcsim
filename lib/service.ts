@@ -4,6 +4,7 @@ import { calculateValue, era, generateSnapshot, CONTENT_VERSION, investmentAmoun
 import { anonymizeText, playerCard } from "./cards";
 import { getDb, transaction, type DB } from "./db";
 import { hash, HttpError, newToken } from "./security";
+import { createReadCache } from "./read-cache";
 import type { Decision, Project, RunView, Snapshot } from "./types";
 
 export type EventRow = { id: string; title: string; status: string; mode: string; snapshot: Snapshot; settings: { topCount: number; luckyCount: number }; frozen_rows: LeaderRow[] | null };
@@ -14,6 +15,9 @@ const globalService = globalThis as typeof globalThis & { vcSeed?: Promise<void>
 // Rule upgrades must not overwrite an unchanged bank or an administrator's imported cards.
 const BANK_VERSION = `2026.10-workbook-v4.2:${hash(JSON.stringify(PROJECTS))}`;
 const SEED_VERSION = `${CONTENT_VERSION}:${BANK_VERSION}`;
+const snapshots = createReadCache<Snapshot>(Infinity, 16);
+type EventHeader = Omit<EventRow, "snapshot"> & { snapshot_revision: string };
+const eventColumns = "id,title,status,mode,settings,frozen_rows,snapshot_revision";
 export async function ensureSeed() {
   if (globalService.vcSeedVersion !== SEED_VERSION) { globalService.vcSeed = undefined; globalService.vcSeedVersion = SEED_VERSION; }
   globalService.vcSeed ??= (async () => {
@@ -48,13 +52,26 @@ export async function ensureSeed() {
 }
 export async function getEvent(id?: string, db?: DB, lock = false): Promise<EventRow> {
   await ensureSeed(); db ??= await getDb();
-  const q = id ? "SELECT * FROM events WHERE id=$1" : "SELECT * FROM events ORDER BY (status='open') DESC, created_at DESC, id DESC LIMIT 1";
-  const r = await db.query<EventRow>(q + (lock ? " FOR UPDATE" : ""), id ? [id] : []);
-  if (!r.rows[0]) throw new HttpError(404, "活动不存在。"); return r.rows[0];
+  const q = id ? `SELECT ${eventColumns} FROM events WHERE id=$1` : `SELECT ${eventColumns} FROM events ORDER BY (status='open') DESC, created_at DESC, id DESC LIMIT 1`;
+  const event = (await db.query<EventHeader>(q + (lock ? " FOR UPDATE" : ""), id ? [id] : [])).rows[0];
+  if (!event) throw new HttpError(404, "活动不存在。");
+  const snapshot = await snapshots.get(`${event.id}:${event.snapshot_revision}`, async () => {
+    const row = (await db.query<{ snapshot: Snapshot }>("SELECT snapshot FROM events WHERE id=$1 AND snapshot_revision=$2", [event.id, event.snapshot_revision])).rows[0];
+    // A concurrent import changed the version between reads; retry rather than cache wrong data.
+    if (!row) throw new HttpError(409, "活动题库已更新，请重试。");
+    return row.snapshot;
+  });
+  const { snapshot_revision: _revision, ...header } = event;
+  return { ...header, snapshot };
 }
 export async function getActiveEvent(db?: DB): Promise<EventRow | null> {
   await ensureSeed();
-  return (await (db ?? await getDb()).query<EventRow>("SELECT * FROM events WHERE status='open'")).rows[0] ?? null;
+  const row = (await (db ?? await getDb()).query<{ id: string }>("SELECT id FROM events WHERE status='open'")).rows[0];
+  return row ? getEvent(row.id, db) : null;
+}
+export async function getActiveEventId() {
+  await ensureSeed();
+  return (await (await getDb()).query<{ id: string }>("SELECT id FROM events WHERE status='open'")).rows[0]?.id ?? null;
 }
 export async function playerForToken(token: string | undefined, db?: DB): Promise<PlayerRow> {
   if (!token) throw new HttpError(401, "请先登记参加活动。");
@@ -165,7 +182,7 @@ export async function decide(id: string, token: string | undefined, decision: De
     return view({ ...run, decisions, status: completed ? "completed" : "playing", profit }, event, player);
   });
 }
-export async function leaderboard(event: EventRow, db?: DB): Promise<LeaderRow[]> {
+export async function leaderboard(event: Pick<EventRow, "id" | "frozen_rows">, db?: DB): Promise<LeaderRow[]> {
   if (event.frozen_rows) return event.frozen_rows;
   const rows = (await (db ?? await getDb()).query<{ playerId: string; name: string; institution: string; profit: string }>(`SELECT p.id AS "playerId", p.name,p.institution,r.profit FROM runs r JOIN players p ON p.id=r.player_id WHERE r.event_id=$1 AND r.status='completed' ORDER BY r.profit DESC,p.id`, [event.id])).rows;
   return rankRows(rows.map(r => ({ ...r, profit: Number(r.profit) })));
@@ -312,10 +329,24 @@ export function eventMeta(event: EventRow) {
   const rules = rulesFor(event.snapshot); return { id: event.id, title: event.title, status: event.status, mode: event.mode, contentVersion: event.snapshot.version, yearBasis: event.snapshot.projects.every(p => p.decisionYear !== undefined) ? "entry" : "legacy", total: rules.total, maxInvestments: rules.maxInvestments, ticket: rules.ticket, maxTicket: rules.maxTicket ?? rules.ticket, initial: rules.initial, endOnInvestmentLimit: !!rules.endOnInvestmentLimit, settlementYear: rules.settlementYear, eras: event.snapshot.events.map(e => ({ title: e.title, text: e.text })), settings: event.settings };
 }
 export async function publicMeta() {
-  const event = await getActiveEvent();
-  return event ? { ...eventMeta(event), replayEnabled: await replayEnabled() } : null;
+  await ensureSeed();
+  // Project metadata inside Postgres; never transfer the bank, paths or decks for polling.
+  const row = (await (await getDb()).query<{
+    id: string; title: string; status: string; mode: string; settings: EventRow["settings"];
+    content_version: string; rules: Snapshot["rules"]; eras: Snapshot["events"]; entry_years: boolean; replay_enabled: boolean;
+  }>(`SELECT e.id,e.title,e.status,e.mode,e.settings,
+    snapshot->>'version' AS content_version,snapshot->'rules' AS rules,snapshot->'events' AS eras,
+    NOT EXISTS(SELECT 1 FROM jsonb_array_elements(snapshot->'projects') p WHERE NOT p ? 'decisionYear') AS entry_years,
+    s.replay_enabled FROM events e CROSS JOIN game_settings s WHERE e.status='open' AND s.id=1`)).rows[0];
+  if (!row) return null;
+  const rules = rulesFor({ rules: row.rules } as Snapshot);
+  return { id: row.id, title: row.title, status: row.status, mode: row.mode, contentVersion: row.content_version,
+    yearBasis: row.entry_years ? "entry" : "legacy", total: rules.total, maxInvestments: rules.maxInvestments,
+    ticket: rules.ticket, maxTicket: rules.maxTicket ?? rules.ticket, initial: rules.initial,
+    endOnInvestmentLimit: !!rules.endOnInvestmentLimit, settlementYear: rules.settlementYear,
+    eras: row.eras.map(e => ({ title: e.title, text: e.text })), settings: row.settings, replayEnabled: row.replay_enabled };
 }
 export async function publicLeaderboard() {
-  const event = await getActiveEvent();
-  return { id: event?.id ?? null, rows: event ? await leaderboard(event) : [], frozen: false, status: event?.status ?? "inactive", title: event?.title ?? "暂无进行中的活动", mode: event?.mode ?? "", initial: event ? rulesFor(event.snapshot).initial : null };
+  const meta = await publicMeta();
+  return { id: meta?.id ?? null, rows: meta ? await leaderboard({ id: meta.id, frozen_rows: null }) : [], frozen: false, status: meta?.status ?? "inactive", title: meta?.title ?? "暂无进行中的活动", mode: meta?.mode ?? "", initial: meta?.initial ?? null };
 }

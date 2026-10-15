@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import QRCode from "qrcode";
 import { assertAdmin, assertOrigin, cookieOptions, HttpError, rateLimit, sameSecret, sign, verify } from "../../../lib/security";
-import { adminAction, adminState, decide, eventMeta, getActiveEvent, getEvent, getRun, leaderboard, playerForToken, publicLeaderboard, publicMeta, register, replayEnabled, resetPlayer, result, startRun } from "../../../lib/service";
+import { adminAction, adminState, decide, eventMeta, getActiveEventId, getEvent, getRun, leaderboard, playerForToken, publicLeaderboard, publicMeta, register, resetPlayer, result, startRun } from "../../../lib/service";
 import { getDb } from "../../../lib/db";
+import { createReadCache } from "../../../lib/read-cache";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 const text = z.string().trim().min(1).max(80);
+const publicReads = createReadCache<unknown>(2000, 2);
 const sourceSchema = z.object({ url: z.url().refine(v => /^https?:/.test(v)), publishedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(), note: z.string().max(500) });
 const projectSchema = z.object({ id: z.string().min(1).max(80), name: text, alias: text, year: z.number().int().min(2006).max(2026), category: z.enum(["A", "B", "C"]), real: z.boolean(), market: z.enum(["CN", "overseas"]), robotics: z.boolean(), sector: text,
   foundedYear: z.number().int().min(1900).max(2026).optional(), firstFundingYear: z.number().int().min(1900).max(2026).optional(),
@@ -34,11 +36,18 @@ function playerTokens(request: NextRequest): Record<string, string> {
 async function tokenForRun(request: NextRequest, runId: string) {
   const db = await getDb(); const r = await db.query<{ event_id: string }>("SELECT event_id FROM runs WHERE id=$1", [runId]);
   if (!r.rows[0]) throw new HttpError(404, "游戏不存在。");
-  if ((await getActiveEvent())?.id !== r.rows[0].event_id) throw new HttpError(409, "活动已停止或已切换，请进入当前活动。");
+  if (await getActiveEventId() !== r.rows[0].event_id) throw new HttpError(409, "活动已停止或已切换，请进入当前活动。");
   return playerTokens(request)[r.rows[0].event_id];
 }
 function reply(body: unknown, status = 200) { return NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } }); }
+async function publicReply(key: string, read: () => Promise<unknown>) {
+  return NextResponse.json(await publicReads.get(key, read), { headers: {
+    "Cache-Control": "public, max-age=0, s-maxage=2, must-revalidate",
+    "Vercel-CDN-Cache-Control": "max-age=2",
+  } });
+}
 async function dispatch(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
+  if (process.env.MAINTENANCE_MODE === "1") return NextResponse.json({ error: "数据迁移维护中，进度已保存，请稍后重试。" }, { status: 503, headers: { "Cache-Control": "no-store", "Retry-After": "60" } });
   try {
     assertOrigin(request); const { path } = await context.params; const route = path.join("/"), post = request.method === "POST";
     if (post && Number(request.headers.get("content-length") || 0) > 1500000) throw new HttpError(413, "内容太大。");
@@ -49,12 +58,11 @@ async function dispatch(request: NextRequest, context: { params: Promise<{ path:
       const response = reply({ ok: true }); response.cookies.set("vc_admin", sign(`admin:${Date.now() + 8 * 60 * 60 * 1000}`), { ...cookieOptions, maxAge: 8 * 60 * 60 }); return response;
     }
     if (route === "admin/logout" && post) { const response = reply({ ok: true }); response.cookies.delete("vc_admin"); return response; }
-    if (route === "meta" && !post) return reply(await publicMeta());
+    if (route === "meta" && !post) return await publicReply("meta", publicMeta);
     if (route === "session" && !post) {
-      const event = await getActiveEvent();
-      if (!event) return reply({ meta: null, player: null, run: null });
-      const meta = { ...eventMeta(event), replayEnabled: await replayEnabled() };
-      const token = playerTokens(request)[event.id];
+      const meta = await publicMeta();
+      if (!meta) return reply({ meta: null, player: null, run: null });
+      const token = playerTokens(request)[meta.id];
       if (!token) return reply({ meta, player: null, run: null });
       try { const player = await playerForToken(token); const db = await getDb(); const run = (await db.query<{ id: string }>("SELECT id FROM runs WHERE player_id=$1", [player.id])).rows[0];
         return reply({ meta, player: { name: player.name, institution: player.institution }, run: run ? await getRun(run.id, token) : null });
@@ -63,6 +71,7 @@ async function dispatch(request: NextRequest, context: { params: Promise<{ path:
     if (route === "session/reset" && post) {
       const { eventId } = z.object({ eventId: z.string().min(1).max(80) }).parse(await request.json());
       const tokens = playerTokens(request), value = await resetPlayer(eventId, tokens[eventId]);
+      publicReads.clear();
       delete tokens[eventId];
       const response = reply(value);
       if (Object.keys(tokens).length) response.cookies.set("vc_players", sign(JSON.stringify(tokens)), cookieOptions);
@@ -73,7 +82,8 @@ async function dispatch(request: NextRequest, context: { params: Promise<{ path:
       assertAdmin(request); const eventId = request.nextUrl.searchParams.get("event") || undefined;
       if (!post) return reply(await adminState(eventId));
       const parsed = adminSchema.parse(await request.json());
-      return reply(await adminAction(eventId, parsed.action, parsed));
+      const value = await adminAction(eventId, parsed.action, parsed); publicReads.clear();
+      return reply(value);
     }
     if (route === "admin/leaderboard" && !post) {
       assertAdmin(request);
@@ -100,7 +110,7 @@ async function dispatch(request: NextRequest, context: { params: Promise<{ path:
       const base = process.env.PUBLIC_URL || "http://localhost:3000";
       return new NextResponse(await QRCode.toString(`${base.replace(/\/$/, "")}/`, { type: "svg", margin: 2 }), { headers: { "Content-Type": "image/svg+xml", "Cache-Control": "no-store" } });
     }
-    if (route === "leaderboard" && !post) return reply(await publicLeaderboard());
+    if (route === "leaderboard" && !post) return await publicReply("leaderboard", publicLeaderboard);
     if (path[0] === "events" && path.length === 3) {
       const eventId = path[1];
       if (path[2] === "players" && post) {
@@ -113,7 +123,7 @@ async function dispatch(request: NextRequest, context: { params: Promise<{ path:
       }
       if (path[2] === "runs" && post) return reply(await startRun(eventId, playerTokens(request)[eventId]));
       if (path[2] === "leaderboard" && !post) {
-        return reply(await publicLeaderboard());
+        return await publicReply("leaderboard", publicLeaderboard);
       }
     }
     if (path[0] === "runs" && path.length >= 2) {
@@ -122,7 +132,9 @@ async function dispatch(request: NextRequest, context: { params: Promise<{ path:
       if (path[2] === "result" && !post) return reply(await result(runId, token));
       if (path[2] === "decisions" && post) {
         const body = z.object({ projectId: z.string().max(80), choice: z.enum(["invest", "pass"]), key: z.uuid(), amount: z.number().int().positive().optional() }).parse(await request.json());
-        return reply(await decide(runId, token, body));
+        const value = await decide(runId, token, body);
+        if (value.status === "completed") publicReads.clear();
+        return reply(value);
       }
     }
     throw new HttpError(404, "接口不存在。");
