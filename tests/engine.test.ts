@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PROJECTS } from "../data/projects";
+import manifest from "../data/question-bank-manifest.json";
 import { calculateValue, deckStats, generateSnapshot, INITIAL, MAX_INVESTMENTS, rankRows, TICKET, validDeck, strategyProfit, rulesFor, chronologicalProjects, projectYear, valuationMultiple } from "../lib/engine";
 import { playerCard } from "../lib/cards";
 import { contentIssues } from "../lib/service";
@@ -8,14 +9,31 @@ const snapshot = generateSnapshot(PROJECTS, "test-world");
 const deck = snapshot.decks[0];
 const decisions = (count: number): Decision[] => deck.ids.map((id, i) => ({ projectId: id, choice: i < count ? "invest" : "pass", key: id }));
 describe("domestic historical content and sequential fund rules", () => {
-  it("has 50 real v3 cases, seven manual examples and two overseas cases", () => {
+  it("has the 50 confirmed domestic v4.2 cases and six confirmed loss recoveries", () => {
     expect(PROJECTS).toHaveLength(50); expect(PROJECTS.every(p => p.real)).toBe(true);
-    expect(PROJECTS.filter(p => p.market === "overseas")).toHaveLength(2);
-    expect(PROJECTS.filter(p => p.editorial?.manualCase)).toHaveLength(7);
+    expect(PROJECTS.filter(p => p.market === "overseas")).toHaveLength(0);
+    expect(PROJECTS.filter(p => p.editorial?.manualCase)).toHaveLength(50);
     expect(PROJECTS.every(p => p.decisionYear && p.team && p.technical && p.traction)).toBe(true);
     expect(contentIssues(PROJECTS)).toEqual(["50题尚未通过审校或缺少同期证据。"]);
     const counts = Object.values(snapshot.paths).map(p => p.multipleBps);
-    expect([counts.filter(v => v > 10000).length, counts.filter(v => v === 10000).length, counts.filter(v => v < 10000).length]).toEqual([36, 6, 8]);
+    expect([counts.filter(v => v > 10000).length, counts.filter(v => v === 10000).length, counts.filter(v => v < 10000).length]).toEqual([44, 0, 6]);
+  });
+  it("matches every confirmed entry year and settlement multiple in the import manifest", () => {
+    const years = manifest.years as Record<string, number>, returns = manifest.returns as Record<string, number>;
+    expect(Object.keys(years).sort()).toEqual(PROJECTS.map(p => p.name).sort());
+    for (const p of PROJECTS) {
+      expect(p.year).toBe(years[p.name]);
+      expect(p.decisionYear).toBe(years[p.name]);
+      expect(p.valuation.entryYear).toBe(years[p.name]);
+      expect(valuationMultiple(p.valuation)).toBeCloseTo(returns[p.name], 8);
+      expect(snapshot.paths[p.id].multipleBps).toBe(Math.round(returns[p.name] * 10000));
+      expect(p.editorial?.sourceSha256).toBe(manifest.sourceSha256);
+      const amount = 15_000_000;
+      expect(calculateValue([{ projectId: p.id, choice: "invest", key: p.id, amount }], snapshot).profit)
+        .toBe(Math.round(amount * Math.round(returns[p.name] * 10000) / 10000) - amount);
+    }
+    expect(chronologicalProjects(PROJECTS).at(-1)?.name).toBe("德塔智能");
+    expect(chronologicalProjects(PROJECTS).find(p => p.name === "柔宇科技")?.year).toBe(2013);
   });
   it("does not count later history as evidence available at entry time", () => {
     const p = { ...PROJECTS[0], review: "approved" as const, reviewedAt: "2026-10-13", decisionEvidence: PROJECTS[0].sources[0].url, sources: [{ ...PROJECTS[0].sources[0], publishedAt: `${PROJECTS[0].year + 1}-01-01` }] };
@@ -49,9 +67,9 @@ describe("domestic historical content and sequential fund rules", () => {
     expect(JSON.stringify(cards)).not.toMatch(/王鹤|韩峰涛|高继扬|邓泰华|彭志辉|陈建宇|王兴兴|汪滔|余凯|黄晓庆|蒋尚义/);
     expect(cards.filter(p => p.placeholder)).toHaveLength(0);
     expect(JSON.stringify(cards)).not.toMatch(/editorial|manualCase|terminalValue|specifiedMultiple|multipleBps|trajectory|history|category|sourceSha256/);
-    const scale = PROJECTS.find(p => p.name === "Scale AI")!;
-    expect(playerCard(scale).entryValuation).toBeUndefined();
-    expect(playerCard(scale).entryReference).toBe("73亿美元");
+    const dji = PROJECTS.find(p => p.name === "大疆创新")!;
+    expect(playerCard(dji).entryValuation).toBeUndefined();
+    expect(playerCard(dji).entryReference).toBe("15亿美元");
     expect(JSON.stringify(PROJECTS)).toBe(before);
   });
   it("preserves all cash when passing, and includes unused principal for smaller portfolios", () => {
@@ -83,15 +101,15 @@ describe("domestic historical content and sequential fund rules", () => {
     expect(calculateValue([{ ...ledger[0], amount: undefined }], legacy, 2026).cash).toBe(95_000_000);
     expect(() => calculateValue([{ ...ledger[0], amount: 10_000_000 }], legacy)).toThrow("金额");
   });
-  it("preserves seven manual returns and calculates original-currency, loss and retention returns", () => {
-    const expected = { 宇树: 1035, 沐曦: 43.75, 梅卡曼德: 625, 智谱: 625, Kimi: 35 / 3, 毫末: 0, 柔宇: 0 };
+  it("preserves confirmed returns and calculates original-currency, loss and retention returns", () => {
+    const expected = { 宇树: 1035, 沐曦: 364.175, 梅卡曼德: 100, 智谱: 564.4, Kimi: 500 / 3, 毫末: .1, 柔宇: .1 };
     for (const [name, multiple] of Object.entries(expected)) {
       const p = PROJECTS.find(p => p.name.includes(name))!;
       expect(snapshot.paths[p.id].multipleBps).toBe(Math.round(multiple * 10000));
     }
-    const scale = PROJECTS.find(p => p.name === "Scale AI")!;
-    expect(valuationMultiple(scale.valuation)).toBeCloseTo(138 / 73);
-    expect(valuationMultiple({ ...scale.valuation, retention: .5 })).toBeCloseTo(138 / 73 * .5);
+    const scale = PROJECTS.find(p => p.name === "大疆创新")!;
+    expect(valuationMultiple(scale.valuation)).toBeCloseTo(160 / 15);
+    expect(valuationMultiple({ ...scale.valuation, retention: .5 })).toBeCloseTo(160 / 15 * .5);
     expect(() => valuationMultiple({ ...scale.valuation, retention: 1.1 })).toThrow();
     expect(() => valuationMultiple({ ...scale.valuation, entryValue: 0 })).toThrow();
     expect(valuationMultiple({ ...scale.valuation, specifiedMultiple: 0 })).toBe(0);

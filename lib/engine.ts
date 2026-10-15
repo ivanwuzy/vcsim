@@ -7,7 +7,7 @@ export const MAX_TICKET = INITIAL * .2;
 export const TOTAL = 50;
 export const MAX_INVESTMENTS = 20;
 export const SETTLEMENT_YEAR = 2031;
-export const CONTENT_VERSION = "2026.10-workbook-v4-adjustable-investment";
+export const CONTENT_VERSION = "2026.10-workbook-v4.2-confirmed-returns";
 export const RULES: GameRules = { initial: INITIAL, ticket: TICKET, maxTicket: MAX_TICKET, total: TOTAL, maxInvestments: MAX_INVESTMENTS, settlementYear: SETTLEMENT_YEAR, endOnInvestmentLimit: true };
 export const projectYear = (project: Project) => project.decisionYear ?? project.foundedYear ?? project.firstFundingYear ?? project.year;
 export const chronologicalProjects = (projects: Project[]) => [...projects].sort((a, b) => projectYear(a) - projectYear(b) || a.id.localeCompare(b.id, "en"));

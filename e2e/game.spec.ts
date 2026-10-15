@@ -48,7 +48,7 @@ test("mobile full run, swipe, lost response recovery, result reveal and host clo
   await page.screenshot({ path: "artifacts/result-mobile.png", fullPage: true });
   await page.getByRole("button", { name: "关闭复盘" }).click();
   await page.getByRole("link", { name: "看看合伙人排行榜" }).click();
-  await expect(page.getByRole("heading", { name: "眼光，会有回报。" })).toBeVisible(); await expect(page.locator(".board-table")).toContainText("浏览器测试玩家");
+  await expect(page.getByRole("heading", { name: "眼光，会有回报。" })).toBeVisible(); await expect(page.getByRole("region", { name: "前三名高亮榜单" })).toContainText("浏览器测试玩家");
   await post(request, `/api/admin?event=${eventId}`, { action: "close" }); await post(request, `/api/admin?event=${eventId}`, { action: "freeze" });
   const key = crypto.randomUUID(); const draw = await post(request, `/api/admin?event=${eventId}`, { action: "draw", key, count: 5 });
   expect(draw.winners).toHaveLength(1); const repeat = await post(request, `/api/admin?event=${eventId}`, { action: "draw", key, count: 5 }); expect(repeat.winners).toEqual(draw.winners);

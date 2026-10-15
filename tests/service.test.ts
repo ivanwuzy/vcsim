@@ -134,12 +134,15 @@ describe("persistent event lifecycle", () => {
     await adminAction(eventId, "rename", { playerId: players[0].player.id, name: "已纠正", institution: "新机构" });
     expect((await leaderboard(await getEvent(eventId))).find(p => p.playerId === players[0].player.id)?.name).toBe("已纠正");
   });
-  it("uses the v3 bank for new activities and accepts overseas imports", async () => {
+  it("uses the confirmed v4.2 domestic bank for new activities and accepts overseas imports", async () => {
     const created = await adminAction(eventId, "create", { title: "国内题库验证", mode: "demo" }) as { eventId: string };
     const projects = (await getEvent(created.eventId)).snapshot.projects;
     expect(projects).toHaveLength(50);
-    expect(projects.filter(p => p.market === "overseas")).toHaveLength(2);
+    expect(projects.filter(p => p.market === "overseas")).toHaveLength(0);
     await expect(adminAction(created.eventId, "import", { projects: projects.map((p, i) => i === 0 ? { ...p, market: "invalid" } : p) })).rejects.toThrow();
+    await adminAction(created.eventId, "import", { projects });
+    await adminAction(created.eventId, "import", { projects: projects.map((p, i) => i === 0 ? { ...p, market: "overseas" } : p) });
+    expect((await getEvent(created.eventId)).snapshot.projects[0].market).toBe("overseas");
     await adminAction(created.eventId, "import", { projects });
   });
   it("preserves played snapshots and permits formal activities with draft sources", async () => {

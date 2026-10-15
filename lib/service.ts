@@ -12,7 +12,7 @@ export type RunRow = { id: string; player_id: string; event_id: string; deck_id:
 export type LeaderRow = { playerId: string; name: string; institution: string; profit: number; rank: number };
 const globalService = globalThis as typeof globalThis & { vcSeed?: Promise<void>; vcSeedVersion?: string };
 // Rule upgrades must not overwrite an unchanged bank or an administrator's imported cards.
-const BANK_VERSION = `2026.10-workbook-v3:${hash(JSON.stringify(PROJECTS))}`;
+const BANK_VERSION = `2026.10-workbook-v4.2:${hash(JSON.stringify(PROJECTS))}`;
 const SEED_VERSION = `${CONTENT_VERSION}:${BANK_VERSION}`;
 export async function ensureSeed() {
   if (globalService.vcSeedVersion !== SEED_VERSION) { globalService.vcSeed = undefined; globalService.vcSeedVersion = SEED_VERSION; }
