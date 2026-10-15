@@ -1,11 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
-import { assertOrigin } from "../lib/security";
+import { assertOrigin, isAdminSession, sign } from "../lib/security";
 
 function request(url: string, origin?: string, method = "POST", headers: Record<string, string> = {}) {
   return new NextRequest(url, { method, headers: { ...headers, ...(origin === undefined ? {} : { Origin: origin }) } });
 }
 afterEach(() => vi.unstubAllEnvs());
+
+describe("host screen session protection", () => {
+  it("accepts only an authenticated, unexpired admin session", () => {
+    vi.stubEnv("SESSION_SECRET", "local-test-session-secret-at-least-32-characters");
+    expect(isAdminSession(sign(`admin:${Date.now() + 60000}`))).toBe(true);
+    for (const value of [undefined, "forged", sign(`admin:${Date.now() - 1}`), sign("admin:not-a-timestamp"), sign(`player:${Date.now() + 60000}`)]) {
+      expect(isAdminSession(value)).toBe(false);
+    }
+  });
+});
 
 describe("request origin protection", () => {
   it("allows the browser's localhost origin when Next.js uses its wildcard bind address", () => {

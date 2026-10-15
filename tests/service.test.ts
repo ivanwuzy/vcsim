@@ -10,6 +10,40 @@ beforeAll(async () => {
   process.env.APP_MODE = "demo"; eventId = (await getEvent()).id;
 });
 describe("persistent event lifecycle", () => {
+  it("persists variable investments, validates budgets and preserves the amount on retries and settlement", async () => {
+    const { eventId: variableEventId } = await adminAction(undefined, "create", { title: "可调金额测试", mode: "demo" }) as { eventId: string };
+    await adminAction(variableEventId, "open", {});
+    const player = await register(variableEventId, "可调金额玩家", "基金");
+    let r = await startRun(variableEventId, player.token);
+    expect(r.cash).toBe(200_000_000);
+    for (const amount of [0, 4_000_000, 7_500_000, 45_000_000]) await expect(decide(r.id, player.token, { projectId: r.card!.id, choice: "invest", key: randomUUID(), amount })).rejects.toThrow("金额");
+    const first = { projectId: r.card!.id, choice: "invest" as const, key: randomUUID(), amount: 40_000_000 };
+    const replies = await Promise.all([decide(r.id, player.token, first), decide(r.id, player.token, first)]);
+    r = replies[0]; expect(replies[1]).toEqual(r); expect(r.cash).toBe(160_000_000); expect(r.invested).toBe(1);
+    await expect(decide(r.id, player.token, { ...first, amount: 5_000_000 })).rejects.toThrow("内容");
+    for (let i = 0; i < 3; i++) r = await decide(r.id, player.token, { projectId: r.card!.id, choice: "invest", key: randomUUID(), amount: 40_000_000 });
+    r = await decide(r.id, player.token, { projectId: r.card!.id, choice: "invest", key: randomUUID(), amount: 25_000_000 });
+    expect(r.cash).toBe(15_000_000); expect(r.status).toBe("playing");
+    const before = await getRun(r.id, player.token);
+    await expect(decide(r.id, player.token, { projectId: r.card!.id, choice: "invest", key: randomUUID(), amount: 20_000_000 })).rejects.toThrow("本金不足");
+    expect(await getRun(r.id, player.token)).toEqual(before);
+    const last = { projectId: r.card!.id, choice: "invest" as const, key: randomUUID(), amount: 15_000_000 };
+    const finalReplies = await Promise.all([decide(r.id, player.token, last), decide(r.id, player.token, last)]);
+    r = finalReplies[0]; expect(finalReplies[1]).toEqual(r);
+    expect(r.status).toBe("completed"); expect(r.card).toBeNull(); expect(r.index).toBe(6); expect(r.year).toBe(2031);
+    expect((await getRun(r.id, player.token)).status).toBe("completed");
+    expect((await startRun(variableEventId, player.token)).card).toBeNull();
+    const futureId = (await getEvent(variableEventId)).snapshot.decks[0].ids[6];
+    await expect(decide(r.id, player.token, { projectId: futureId, choice: "invest", key: randomUUID(), amount: 5_000_000 })).rejects.toThrow("已完成");
+    const final = await result(r.id, player.token);
+    expect(final.unspent).toBe(0); expect(final.invested).toBe(6);
+    expect(final.seen).toBe(6); expect(final.unseen).toBe(44); expect(final.completionReason).toBe("principal-exhausted");
+    expect(final.reviews.map(p => p.amount)).toEqual([40_000_000, 40_000_000, 40_000_000, 40_000_000, 25_000_000, 15_000_000]);
+    expect(r.value).toBe(final.value); expect(JSON.stringify(final)).not.toContain(futureId);
+    expect(final.profit).toBe(final.reviews.filter(p => p.choice === "invest").reduce((sum, p) => sum + p.profit, 0));
+    expect((await leaderboard(await getEvent(variableEventId))).find(p => p.playerId === player.player.id)?.profit).toBe(final.profit);
+    await adminAction(eventId, "open", {});
+  });
   it("recovers the same run, rejects impersonation, out-of-order and altered retries", async () => {
     const a = await register(eventId, "甲", "机构A"), b = await register(eventId, "乙", "机构B");
     await expect(register(eventId, " 甲 ", "机构A")).rejects.toThrow("已登记");
@@ -42,7 +76,7 @@ describe("persistent event lifecycle", () => {
     const futureId = (await getEvent(created.eventId)).snapshot.decks[0].ids[20];
     await expect(decide(r.id, player.token, { projectId: futureId, choice: "invest", key: randomUUID() })).rejects.toThrow("已完成");
     const final = await result(r.id, player.token);
-    expect(final.invested).toBe(20); expect(final.unspent).toBe(0); expect(final.reviews).toHaveLength(20);
+    expect(final.invested).toBe(20); expect(final.unspent).toBe(100_000_000); expect(final.reviews).toHaveLength(20);
     expect(final.seen).toBe(20); expect(final.unseen).toBe(30); expect(final.completionReason).toBe("investment-limit");
     expect(final.reviews.every(p => p.choice === "invest")).toBe(true);
     expect(final.highlights.missed).toBeNull();
@@ -52,8 +86,8 @@ describe("persistent event lifecycle", () => {
     let few = await startRun(created.eventId, small.token);
     for (let i = 0; i < 50; i++) few = await decide(few.id, small.token, { projectId: few.card!.id, choice: i === 0 ? "invest" : "pass", key: randomUUID() });
     const fewResult = await result(few.id, small.token);
-    expect(fewResult.invested).toBe(1); expect(fewResult.unspent).toBe(95_000_000);
-    expect(fewResult.value).toBe(100_000_000 + fewResult.reviews[0].profit);
+    expect(fewResult.invested).toBe(1); expect(fewResult.unspent).toBe(195_000_000);
+    expect(fewResult.value).toBe(200_000_000 + fewResult.reviews[0].profit);
     expect(fewResult.reviews).toHaveLength(50); expect(fewResult.completionReason).toBe("timeline-end");
     await adminAction(created.eventId, "close", {}); await adminAction(created.eventId, "freeze", {});
     const draw = await adminAction(created.eventId, "draw", { key: randomUUID(), count: 10 }) as { winners: { playerId: string }[] };
@@ -72,7 +106,7 @@ describe("persistent event lifecycle", () => {
     }
     const waited = await result(r.id, a.token), passed = await result(other.id, b.token);
     expect(waited.seen).toBe(50); expect(waited.unseen).toBe(0); expect(waited.invested).toBe(1);
-    expect(passed.value).toBe(100_000_000); expect(passed.profit).toBe(0); expect(passed.unspent).toBe(100_000_000);
+    expect(passed.value).toBe(200_000_000); expect(passed.profit).toBe(0); expect(passed.unspent).toBe(200_000_000);
     expect(passed.reviews).toHaveLength(50);
   });
   it("freezes immutable standings and only draws completed, unique players across batches", async () => {
@@ -185,6 +219,7 @@ describe("persistent event lifecycle", () => {
     const oldDraft = structuredClone(draft.snapshot), oldPlayed = structuredClone(active.snapshot);
     for (const snapshot of [oldDraft, oldPlayed]) {
       snapshot.version = "2026.10-domestic-v2";
+      snapshot.rules!.initial = 150_000_000; delete snapshot.rules!.maxTicket;
       snapshot.rules!.total = 25; delete snapshot.rules!.endOnInvestmentLimit;
       snapshot.decks[0].ids = snapshot.decks[0].ids.slice(0, 25);
     }
@@ -195,6 +230,7 @@ describe("persistent event lifecycle", () => {
     globals.vcSeed = Promise.resolve(); globals.vcSeedVersion = "previous-rule-version";
     await ensureSeed();
     expect((await getEvent(draft.id)).snapshot.rules?.total).toBe(50);
+    expect((await getEvent(draft.id)).snapshot.rules).toMatchObject({ initial: 200_000_000, maxTicket: 40_000_000 });
     expect((await getEvent(draft.id)).snapshot.projects).toEqual(oldDraft.projects);
     expect((await getEvent(active.id)).snapshot).toEqual(oldPlayed);
     let resumed = await getRun(run.id, player.token);

@@ -111,7 +111,7 @@ async function dispatch(request: NextRequest, context: { params: Promise<{ path:
       if (path.length === 2 && !post) return reply(await getRun(runId, token));
       if (path[2] === "result" && !post) return reply(await result(runId, token));
       if (path[2] === "decisions" && post) {
-        const body = z.object({ projectId: z.string().max(80), choice: z.enum(["invest", "pass"]), key: z.uuid() }).parse(await request.json());
+        const body = z.object({ projectId: z.string().max(80), choice: z.enum(["invest", "pass"]), key: z.uuid(), amount: z.number().int().positive().optional() }).parse(await request.json());
         return reply(await decide(runId, token, body));
       }
     }

@@ -16,9 +16,9 @@ export type ValuationPoint = { year: number; cumulativeFundingYuan?: number; val
 export type Valuation = { method: "funding-proxy" | "assumption" | "fiction" | "manual" | "reference"; entryYear: number; endYear: number; entryYuan: number | null; terminalYuan: number | null; entryFundingYuan?: number; terminalFundingYuan?: number; points: ValuationPoint[]; reference: string; status: string; note: string; basis?: string; currency?: "CNY" | "USD" | "index"; entryValue?: number | null; terminalValue?: number | null; specifiedMultiple?: number; retention?: number; entryRound?: string; cutoff?: string };
 export type Path = { multipleBps: number; ending: string; milestones: { year: number; valueBps: number; text: string }[] };
 export type Deck = { id: string; ids: string[]; maxProfit: number; losses: number; allInProfit: number };
-export type GameRules = { initial: number; ticket: number; total: number; maxInvestments: number; settlementYear: number; endOnInvestmentLimit?: boolean };
+export type GameRules = { initial: number; ticket: number; maxTicket?: number; total: number; maxInvestments: number; settlementYear: number; endOnInvestmentLimit?: boolean };
 export type Snapshot = { version: string; projects: Project[]; paths: Record<string, Path>; decks: Deck[]; events: { title: string; text: string; shock: string }[]; rules?: GameRules };
-export type Decision = { projectId: string; choice: Choice; key: string };
+export type Decision = { projectId: string; choice: Choice; key: string; amount?: number };
 export type PlayerCard = Pick<Project, "id" | "alias" | "year" | "sector" | "pitch" | "team" | "technical" | "traction" | "risk"> & { entryValuation?: number; entryReference?: string; placeholder?: boolean; yearBasis?: "entry" | "founded" | "first-funding" | "example" };
 export type RunView = {
   id: string; player: { name: string; institution: string }; status: "playing" | "completed";

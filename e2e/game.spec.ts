@@ -20,7 +20,7 @@ test("mobile full run, swipe, lost response recovery, result reveal and host clo
   await page.getByLabel("你的姓名").fill("浏览器测试玩家"); await page.getByLabel("机构名称").fill("演示基金");
   await page.getByRole("button", { name: "开启我的投资之旅" }).click();
   await expect(page.getByRole("heading", { name: "未来便利店" })).toBeVisible();
-  await page.getByRole("button", { name: /练习：投资/ }).click();
+  await page.getByRole("button", { name: "投资 500 万", exact: true }).click();
   await expect(page.getByTestId("project-card")).toBeVisible();
   expect(await page.locator('.brand').getAttribute('href')).toBe('/');
   expect((await page.request.get("/api/admin")).status()).toBe(401);
@@ -30,14 +30,14 @@ test("mobile full run, swipe, lost response recovery, result reveal and host clo
   await expect(page.locator(".progress-stat strong")).toContainText("02");
   // Simulate server accepted a decision but browser did not receive the response.
   await page.route("**/api/runs/*/decisions", async route => { await route.fetch(); await route.abort("failed"); }, { times: 1 });
-  await page.getByRole("button", { name: /这次不投/ }).click();
+  await page.getByRole("button", { name: "不投", exact: true }).click();
   await expect(page.getByRole("button", { name: "重试保存" })).toBeVisible();
   await page.getByRole("button", { name: "重试保存" }).click();
   await expect(page.locator(".progress-stat strong")).toContainText("03");
   await page.reload(); await expect(page.locator(".progress-stat strong")).toContainText("03");
   for (let i = 2; i < 50; i++) {
     const before = await page.locator(".card-number").textContent();
-    await page.getByRole("button", { name: /这次不投/ }).click();
+    await page.getByRole("button", { name: "不投", exact: true }).click();
     if (i < 49) await expect(page.locator(".card-number")).not.toHaveText(before!);
   }
   await expect(page.getByRole("heading", { name: "选择有了回响。" })).toBeVisible();
@@ -111,7 +111,7 @@ test("twenty early investments settle immediately and stop presenting subsequent
   await page.goto("/");
   await page.getByLabel("你的姓名").fill("满仓测试玩家"); await page.getByLabel("机构名称").fill("隔离测试基金");
   await page.getByRole("button", { name: "开启我的投资之旅" }).click();
-  await page.getByRole("button", { name: /练习：投资/ }).click();
+  await page.getByRole("button", { name: "投资 500 万", exact: true }).click();
   for (let i = 0; i < 20; i++) {
     await expect(page.locator(".progress-stat strong")).toContainText(String(i + 1).padStart(2, "0"));
     await page.getByRole("button", { name: /投资 500 万/ }).click();
@@ -130,6 +130,82 @@ test("twenty early investments settle immediately and stop presenting subsequent
   await expect(page.locator(".review")).toHaveCount(20);
 });
 
+test("variable tickets deduct the displayed amount and settle a mixed twenty-project portfolio", async ({ page, request }) => {
+  await post(request, "/api/admin/login", { password: process.env.ADMIN_PASSWORD });
+  const { eventId } = await post(request, "/api/admin", { action: "create", title: "可调投资金额验证", mode: "demo" });
+  await post(request, `/api/admin?event=${eventId}`, { action: "open" });
+  const meta = await request.get("/api/meta").then(r => r.json());
+  expect(meta).toMatchObject({ initial: 200_000_000, ticket: 5_000_000, maxTicket: 40_000_000, maxInvestments: 20 });
+  await page.goto("/");
+  await page.getByLabel("你的姓名").fill("可调投资玩家"); await page.getByLabel("机构名称").fill("金额验证基金");
+  await page.getByRole("button", { name: "开启我的投资之旅" }).click();
+  await page.getByRole("button", { name: "投资 500 万", exact: true }).click();
+  const slider = page.getByRole("slider", { name: "单笔投资" });
+  const invest = page.locator(".decision.invest");
+  await expect(invest).toContainText("投资 500 万"); await expect(slider).toHaveValue("5000000");
+  const session = await page.request.get("/api/session").then(r => r.json());
+  for (const amount of [7_500_000, 45_000_000]) {
+    const invalid = await page.request.post(`/api/runs/${session.run.id}/decisions`, { headers: { Origin: origin }, data: { projectId: session.run.card.id, choice: "invest", key: crypto.randomUUID(), amount } });
+    expect(invalid.status()).toBe(422);
+  }
+  await slider.press("ArrowRight"); await expect(invest).toContainText("投资 1,000 万");
+  const card = (await page.getByTestId("project-card").boundingBox())!;
+  const x = card.x + card.width / 2, y = card.y + card.height / 2;
+  await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x + 110, y, { steps: 6 });
+  await expect(page.getByTestId("swipe-overlay")).toContainText("投资1,000万"); await page.mouse.up();
+  await expect(page.locator(".cash-stat strong")).toContainText("19,000"); await expect(invest).toContainText("投资 1,000 万");
+  await page.getByRole("button", { name: "不投", exact: true }).click(); await expect(page.locator(".progress-stat strong")).toContainText("03");
+  await page.reload(); await expect(invest).toContainText("投资 1,000 万");
+  await slider.press("End");
+  await expect(slider).toHaveValue("40000000"); await expect(invest).toContainText("投资 4,000 万"); await invest.click();
+  await expect(page.locator(".cash-stat strong")).toContainText("15,000");
+  await slider.press("Home");
+  for (let i = 0; i < 18; i++) { await expect(invest).toBeEnabled(); await invest.click(); }
+  await expect(page.getByRole("heading", { name: "选择有了回响。" })).toBeVisible();
+  await expect(page.locator(".result-intro")).toContainText("保留6,000万元未投本金");
+  const final = await page.request.get(`/api/runs/${session.run.id}/result`).then(r => r.json());
+  expect(final.invested).toBe(20); expect(final.seen).toBe(21); expect(final.unspent).toBe(60_000_000);
+  expect(final.reviews.filter((r: { choice: string }) => r.choice === "invest").map((r: { amount: number }) => r.amount)).toEqual([10_000_000, 40_000_000, ...Array(18).fill(5_000_000)]);
+  await page.getByRole("button", { name: "查看 21 个项目复盘" }).click(); await page.locator(".review-toggle").first().click();
+  await expect(page.locator(".review-detail")).toContainText("本次投资 1,000 万元");
+});
+
+test("exhausting principal caps the last ticket and settles immediately", async ({ page, request }) => {
+  await post(request, "/api/admin/login", { password: process.env.ADMIN_PASSWORD });
+  const { eventId } = await post(request, "/api/admin", { action: "create", title: "本金耗尽验证", mode: "demo" });
+  await post(request, `/api/admin?event=${eventId}`, { action: "open" });
+  await page.goto("/");
+  await page.getByLabel("你的姓名").fill("本金耗尽玩家"); await page.getByLabel("机构名称").fill("余额验证基金");
+  await page.getByRole("button", { name: "开启我的投资之旅" }).click();
+  await page.getByRole("button", { name: "投资 500 万", exact: true }).click();
+  const slider = page.getByRole("slider", { name: "单笔投资" });
+  const invest = page.locator(".decision.invest");
+  await slider.press("End");
+  for (let i = 0; i < 4; i++) {
+    await expect(invest).toContainText("投资 4,000 万"); await invest.click();
+    await expect(page.locator(".cash-stat strong")).toContainText((20_000 - (i + 1) * 4_000).toLocaleString("en-US"));
+  }
+  await slider.press("ArrowLeft"); // Invest 3500 of the remaining 4000, leaving one 500 ticket.
+  await expect(invest).toContainText("投资 3,500 万"); await invest.click();
+  await expect(page.locator(".cash-stat strong")).toContainText("500");
+  await expect(slider).toHaveCount(0);
+  await expect(invest).toContainText("投资 500 万"); await expect(invest).toBeEnabled();
+  await page.reload();
+  await expect(invest).toContainText("投资 500 万"); await expect(slider).toHaveCount(0);
+  const session = await page.request.get("/api/session").then(r => r.json());
+  const invalid = await page.request.post(`/api/runs/${session.run.id}/decisions`, { headers: { Origin: origin }, data: { projectId: session.run.card.id, choice: "invest", key: crypto.randomUUID(), amount: 10_000_000 } });
+  expect(invalid.status()).toBe(409);
+  await invest.click();
+  await expect(page.getByRole("heading", { name: "选择有了回响。" })).toBeVisible();
+  await expect(page.locator(".result-intro")).toContainText("本金已全部投完");
+  await expect(page.locator(".result-intro")).toContainText("后续44个项目未再呈现");
+  await expect(page.getByTestId("project-card")).toHaveCount(0);
+  const final = await page.request.get(`/api/runs/${session.run.id}/result`).then(r => r.json());
+  expect(final).toMatchObject({ invested: 6, seen: 6, unspent: 0, completionReason: "principal-exhausted" });
+  expect(final.reviews.map((r: { amount: number }) => r.amount)).toEqual([40_000_000, 40_000_000, 40_000_000, 40_000_000, 35_000_000, 5_000_000]);
+  await page.reload(); await expect(page.locator(".result-intro")).toContainText("本金已全部投完");
+});
+
 test("passing every project retains all principal and ends at project 50", async ({ page, request }) => {
   await post(request, "/api/admin/login", { password: process.env.ADMIN_PASSWORD });
   const { eventId } = await post(request, "/api/admin", { action: "create", title: "全不投测试", mode: "demo" });
@@ -137,14 +213,14 @@ test("passing every project retains all principal and ends at project 50", async
   await page.goto("/");
   await page.getByLabel("你的姓名").fill("耐心玩家"); await page.getByLabel("机构名称").fill("现金基金");
   await page.getByRole("button", { name: "开启我的投资之旅" }).click();
-  await page.getByRole("button", { name: /练习：不投/ }).click();
+  await page.getByRole("button", { name: "不投", exact: true }).click();
   for (let i = 0; i < 50; i++) {
     await expect(page.locator(".progress-stat strong")).toContainText(String(i + 1).padStart(2, "0"));
-    await expect(page.locator(".decision-hint")).toContainText("已投 0 / 20 家");
-    await page.getByRole("button", { name: /这次不投/ }).click();
+    await expect(page.locator(".game-stats > div:nth-child(3) strong")).toContainText("0 / 20");
+    await page.getByRole("button", { name: "不投", exact: true }).click();
   }
   await expect(page.locator(".result-intro")).toContainText("已看完50个项目");
-  await expect(page.locator(".result-intro")).toContainText("保留10,000万元未投本金");
+  await expect(page.locator(".result-intro")).toContainText("保留20,000万元未投本金");
   await expect(page.locator(".return-amount")).toContainText("0");
   await page.getByRole("button", { name: "查看 50 个项目复盘" }).click();
   await expect(page.locator(".review")).toHaveCount(50);
@@ -160,8 +236,8 @@ test("players follow activity switches, stopped runs resume, and admins can dele
   await page.goto("/");
   await page.getByLabel("你的姓名").fill("跨活动玩家"); await page.getByLabel("机构名称").fill("同一机构");
   await page.getByRole("button", { name: "开启我的投资之旅" }).click();
-  await page.getByRole("button", { name: /练习：投资/ }).click();
-  await page.getByRole("button", { name: /这次不投/ }).click();
+  await page.getByRole("button", { name: "投资 500 万", exact: true }).click();
+  await page.getByRole("button", { name: "不投", exact: true }).click();
   await expect(page.locator(".progress-stat strong")).toContainText("02");
   const saved = await page.request.get("/api/session").then(r => r.json());
   const { eventId: second } = await post(request, "/api/admin", { action: "create", title: "切换测试二", mode: "formal" });
@@ -171,7 +247,7 @@ test("players follow activity switches, stopped runs resume, and admins can dele
   const stale = await page.request.post(`/api/runs/${saved.run.id}/decisions`, { data: { projectId: saved.run.card.id, choice: "pass", key: crypto.randomUUID() }, headers: { Origin: origin } });
   expect(stale.status()).toBe(409);
   await page.getByRole("button", { name: "开启我的投资之旅" }).click();
-  await page.getByRole("button", { name: /练习：投资/ }).click();
+  await page.getByRole("button", { name: "投资 500 万", exact: true }).click();
   await expect(page.locator(".progress-stat strong")).toContainText("01");
   await post(request, `/api/admin?event=${second}`, { action: "close" });
   await expect(page.getByRole("heading", { name: "暂无进行中的活动" })).toBeVisible({ timeout: 10000 });

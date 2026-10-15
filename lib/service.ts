@@ -1,6 +1,6 @@
 import { randomInt, randomUUID } from "node:crypto";
 import { PROJECTS } from "../data/projects";
-import { calculateValue, era, generateSnapshot, CONTENT_VERSION, rankRows, validDeck, rulesFor, projectYear, valuationMultiple } from "./engine";
+import { calculateValue, era, generateSnapshot, CONTENT_VERSION, investmentAmount, rankRows, validDeck, rulesFor, projectYear, valuationMultiple } from "./engine";
 import { anonymizeText, playerCard } from "./cards";
 import { getDb, transaction, type DB } from "./db";
 import { hash, HttpError, newToken } from "./security";
@@ -121,9 +121,13 @@ export async function decide(id: string, token: string | undefined, decision: De
   const { run: lookup } = await ownedRun(id, token);
   return transaction(async db => {
     const event = await getEvent(lookup.event_id, db, true), { run, player } = await ownedRun(id, token, db, true);
+    const rules = rulesFor(event.snapshot);
+    let amount: number;
+    try { amount = investmentAmount(decision, rules); }
+    catch (error) { throw new HttpError(422, (error as Error).message); }
     const same = run.decisions.find(d => d.key === decision.key);
     if (same) {
-      if (same.projectId !== decision.projectId || same.choice !== decision.choice) throw new HttpError(409, "重试内容与原决策不同。");
+      if (same.projectId !== decision.projectId || same.choice !== decision.choice || investmentAmount(same, rules) !== amount) throw new HttpError(409, "重试内容与原决策不同。");
       return view(run, event, player);
     }
     if (event.status === "frozen") throw new HttpError(409, "榜单已冻结，未完成游戏不再计分。");
@@ -133,8 +137,10 @@ export async function decide(id: string, token: string | undefined, decision: De
     if (deck.ids[run.decisions.length] !== decision.projectId) throw new HttpError(409, "项目顺序不匹配，请恢复当前进度。");
     const invested = run.decisions.filter(d => d.choice === "invest").length;
     if (decision.choice === "invest" && invested >= rulesFor(event.snapshot).maxInvestments) throw new HttpError(409, `已达到${rulesFor(event.snapshot).maxInvestments}家投资上限，剩余项目只能跳过。`);
-    const rules = rulesFor(event.snapshot), decisions = [...run.decisions, decision];
-    const completed = decisions.length >= rules.total || !!rules.endOnInvestmentLimit && invested + (decision.choice === "invest" ? 1 : 0) >= rules.maxInvestments;
+    const spent = run.decisions.reduce((sum, d) => sum + investmentAmount(d, rules), 0);
+    if (amount > rules.initial - spent) throw new HttpError(409, "剩余本金不足，请降低投资金额或跳过项目。");
+    const decisions = [...run.decisions, decision.choice === "invest" ? { ...decision, amount } : decision];
+    const completed = spent + amount >= rules.initial || decisions.length >= rules.total || !!rules.endOnInvestmentLimit && invested + (decision.choice === "invest" ? 1 : 0) >= rules.maxInvestments;
     const profit = completed ? calculateValue(decisions, event.snapshot).profit : null;
     await db.query("UPDATE runs SET decisions=$1,status=$2,profit=$3,completed_at=CASE WHEN $4 THEN NOW() ELSE completed_at END WHERE id=$5", [JSON.stringify(decisions), completed ? "completed" : "playing", profit, completed, id]);
     return view({ ...run, decisions, status: completed ? "completed" : "playing", profit }, event, player);
@@ -147,15 +153,17 @@ export async function leaderboard(event: EventRow, db?: DB): Promise<LeaderRow[]
 }
 export async function result(id: string, token?: string) {
   const { run, player } = await ownedRun(id, token);
-  if (run.status !== "completed") throw new HttpError(409, "基金尚未结束；投满投资名额或看完全部项目后可查看复盘。");
+  if (run.status !== "completed") throw new HttpError(409, "基金尚未结束；投完本金、投满投资名额或看完全部项目后可查看复盘。");
   const event = await getEvent(run.event_id), rows = await leaderboard(event), rules = rulesFor(event.snapshot);
   const reviews = run.decisions.map(d => {
     const p = event.snapshot.projects.find(p => p.id === d.projectId)!; const path = event.snapshot.paths[p.id];
     const display = playerCard(p);
-    return { ...p, ...display, history: anonymizeText(p.history), lesson: anonymizeText(p.lesson), choice: d.choice, multiple: path.multipleBps / 10000, profit: Math.round(rules.ticket * (path.multipleBps - 10000) / 10000), ending: anonymizeText(path.ending) };
+    const amount = d.choice === "invest" ? investmentAmount(d, rules) : rules.ticket;
+    return { ...p, ...display, history: anonymizeText(p.history), lesson: anonymizeText(p.lesson), choice: d.choice, amount, multiple: path.multipleBps / 10000, profit: Math.round(amount * path.multipleBps / 10000) - amount, ending: anonymizeText(path.ending) };
   });
   const best = (items: typeof reviews) => [...items].sort((a, b) => b.profit - a.profit)[0] ?? null;
-  return { ...calculateValue(run.decisions, event.snapshot), initial: rules.initial, seen: run.decisions.length, unseen: rules.total - run.decisions.length, completionReason: run.decisions.length < rules.total ? "investment-limit" as const : "timeline-end" as const, invested: run.decisions.filter(d => d.choice === "invest").length, unspent: rules.initial - run.decisions.filter(d => d.choice === "invest").length * rules.ticket, player: { name: player.name, institution: player.institution }, rank: rows.find(r => r.playerId === player.id)?.rank ?? null, participants: rows.length, reviews,
+  const unspent = rules.initial - run.decisions.reduce((sum, d) => sum + investmentAmount(d, rules), 0);
+  return { ...calculateValue(run.decisions, event.snapshot), initial: rules.initial, seen: run.decisions.length, unseen: rules.total - run.decisions.length, completionReason: unspent === 0 ? "principal-exhausted" as const : run.decisions.length < rules.total ? "investment-limit" as const : "timeline-end" as const, invested: run.decisions.filter(d => d.choice === "invest").length, unspent, player: { name: player.name, institution: player.institution }, rank: rows.find(r => r.playerId === player.id)?.rank ?? null, participants: rows.length, reviews,
     highlights: { best: best(reviews.filter(r => r.choice === "invest" && r.profit > 0)), missed: best(reviews.filter(r => r.choice === "pass" && r.profit > 0)), avoided: [...reviews].filter(r => r.choice === "pass" && r.profit < 0).sort((a, b) => a.profit - b.profit)[0] ?? null }, frozen: event.status === "frozen" };
 }
 export function contentIssues(projects: Project[]) {
@@ -275,7 +283,7 @@ export async function adminAction(eventId: string | undefined, action: string, p
   });
 }
 export function eventMeta(event: EventRow) {
-  const rules = rulesFor(event.snapshot); return { id: event.id, title: event.title, status: event.status, mode: event.mode, contentVersion: event.snapshot.version, yearBasis: event.snapshot.projects.every(p => p.decisionYear !== undefined) ? "entry" : "legacy", total: rules.total, maxInvestments: rules.maxInvestments, ticket: rules.ticket, initial: rules.initial, endOnInvestmentLimit: !!rules.endOnInvestmentLimit, settlementYear: rules.settlementYear, eras: event.snapshot.events.map(e => ({ title: e.title, text: e.text })), settings: event.settings };
+  const rules = rulesFor(event.snapshot); return { id: event.id, title: event.title, status: event.status, mode: event.mode, contentVersion: event.snapshot.version, yearBasis: event.snapshot.projects.every(p => p.decisionYear !== undefined) ? "entry" : "legacy", total: rules.total, maxInvestments: rules.maxInvestments, ticket: rules.ticket, maxTicket: rules.maxTicket ?? rules.ticket, initial: rules.initial, endOnInvestmentLimit: !!rules.endOnInvestmentLimit, settlementYear: rules.settlementYear, eras: event.snapshot.events.map(e => ({ title: e.title, text: e.text })), settings: event.settings };
 }
 export async function publicMeta() {
   const event = await getActiveEvent();

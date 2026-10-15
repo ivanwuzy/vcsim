@@ -68,6 +68,21 @@ describe("domestic historical content and sequential fund rules", () => {
     expect(shown).toBe(20);
     expect(deckStats(deck.ids, snapshot.paths).allInProfit).toBe(calculateValue(decisions(20), snapshot).profit);
   });
+  it("accounts for individual tickets and rejects out-of-range, non-step and overspent ledgers", () => {
+    expect(snapshot.rules).toMatchObject({ initial: 200_000_000, ticket: 5_000_000, maxTicket: 40_000_000 });
+    const amounts = [5_000_000, 15_000_000, 40_000_000];
+    const ledger = amounts.map((amount, i) => ({ projectId: deck.ids[i], choice: "invest" as const, key: deck.ids[i], amount }));
+    const spent = 60_000_000;
+    expect(calculateValue(ledger, snapshot, 2026)).toEqual({ cash: INITIAL - spent, holdings: spent, value: INITIAL, profit: 0 });
+    const proceeds = ledger.reduce((sum, d) => sum + Math.round(d.amount * snapshot.paths[d.projectId].multipleBps / 10000), 0);
+    expect(calculateValue(ledger, snapshot).value).toBe(INITIAL - spent + proceeds);
+    for (const amount of [0, -5_000_000, 1_000_000, 7_500_000, 45_000_000, NaN]) expect(() => calculateValue([{ ...ledger[0], amount }], snapshot)).toThrow("金额");
+    const overBudget = deck.ids.slice(0, 6).map(id => ({ projectId: id, choice: "invest" as const, key: id, amount: 40_000_000 }));
+    expect(() => calculateValue(overBudget, snapshot)).toThrow("本金不足");
+    const legacy = structuredClone(snapshot); delete legacy.rules!.maxTicket; legacy.rules!.initial = 100_000_000;
+    expect(calculateValue([{ ...ledger[0], amount: undefined }], legacy, 2026).cash).toBe(95_000_000);
+    expect(() => calculateValue([{ ...ledger[0], amount: 10_000_000 }], legacy)).toThrow("金额");
+  });
   it("preserves seven manual returns and calculates original-currency, loss and retention returns", () => {
     const expected = { 宇树: 1035, 沐曦: 43.75, 梅卡曼德: 625, 智谱: 625, Kimi: 35 / 3, 毫末: 0, 柔宇: 0 };
     for (const [name, multiple] of Object.entries(expected)) {

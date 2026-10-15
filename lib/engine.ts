@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import type { Choice, Deck, Decision, Era, Path, Project, Snapshot, GameRules, Valuation } from "./types";
 
-export const INITIAL = 100_000_000;
+export const INITIAL = 200_000_000;
 export const TICKET = 5_000_000;
+export const MAX_TICKET = INITIAL * .2;
 export const TOTAL = 50;
 export const MAX_INVESTMENTS = 20;
 export const SETTLEMENT_YEAR = 2031;
-export const CONTENT_VERSION = "2026.10-workbook-v3-fixed-timeline";
-export const RULES: GameRules = { initial: INITIAL, ticket: TICKET, total: TOTAL, maxInvestments: MAX_INVESTMENTS, settlementYear: SETTLEMENT_YEAR, endOnInvestmentLimit: true };
+export const CONTENT_VERSION = "2026.10-workbook-v4-adjustable-investment";
+export const RULES: GameRules = { initial: INITIAL, ticket: TICKET, maxTicket: MAX_TICKET, total: TOTAL, maxInvestments: MAX_INVESTMENTS, settlementYear: SETTLEMENT_YEAR, endOnInvestmentLimit: true };
 export const projectYear = (project: Project) => project.decisionYear ?? project.foundedYear ?? project.firstFundingYear ?? project.year;
 export const chronologicalProjects = (projects: Project[]) => [...projects].sort((a, b) => projectYear(a) - projectYear(b) || a.id.localeCompare(b.id, "en"));
 export const ERA_EVENTS = [
@@ -18,6 +19,12 @@ export const ERA_EVENTS = [
 export const era = (year: number): Era => year <= 2015 ? 0 : year <= 2020 ? 1 : 2;
 export function rng(seed: string) { let a = createHash("sha256").update(seed).digest().readUInt32LE(0); return () => { a += 0x6D2B79F5; let t = a; t = Math.imul(t ^ t >>> 15, t | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61); return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
 export function rulesFor(snapshot: Snapshot): GameRules { return snapshot.rules ?? { initial: 24_000_000, ticket: 1_000_000, total: 24, maxInvestments: 24, settlementYear: 2031 }; }
+export function investmentAmount(decision: Decision, rules: GameRules): number {
+  if (decision.choice !== "invest") return 0;
+  const amount = decision.amount ?? rules.ticket;
+  if (!Number.isSafeInteger(amount) || amount < rules.ticket || amount > (rules.maxTicket ?? rules.ticket) || amount % rules.ticket !== 0) throw new Error("投资金额须在单笔额度内，按默认投资金额的整数档调整。");
+  return amount;
+}
 export function valuationMultiple(v: Valuation): number {
   const retention = v.retention ?? 1;
   if (!Number.isFinite(retention) || retention < 0 || retention > 1) throw new Error("持股保留系数无效。");
@@ -61,13 +68,15 @@ export function calculateValue(decisions: Decision[], snapshot: Snapshot, year =
   const rules = rulesFor(snapshot); let cash = rules.initial, holdings = 0;
   const investments = decisions.filter(d => d.choice === "invest");
   if (investments.length > rules.maxInvestments) throw new Error("投资家数超过上限。");
+  if (investments.reduce((sum, d) => sum + investmentAmount(d, rules), 0) > rules.initial) throw new Error("剩余本金不足，不能超额投资。");
   for (const d of investments) {
-    cash -= rules.ticket;
+    const amount = investmentAmount(d, rules);
+    cash -= amount;
     const p = snapshot.projects.find(x => x.id === d.projectId)!;
     const path = snapshot.paths[p.id];
     const milestones = path.milestones.filter(m => m.year <= year);
     const bps = milestones.length ? milestones[milestones.length - 1].valueBps : 10000;
-    const value = Math.round(rules.ticket * bps / 10000);
+    const value = Math.round(amount * bps / 10000);
     const settled = snapshot.rules ? year >= rules.settlementYear : p.year + 5 <= year;
     if (settled) cash += value; else holdings += value;
   }

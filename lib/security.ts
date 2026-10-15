@@ -12,9 +12,12 @@ export function verify(value: string | undefined) {
   if (!value) return null; const i = value.lastIndexOf("."); if (i < 0) return null;
   const payload = value.slice(0, i); return sameSecret(sign(payload), value) ? payload : null;
 }
+export function isAdminSession(token: string | undefined) {
+  const payload = verify(token);
+  return !!payload && /^admin:\d+$/.test(payload) && Number(payload.slice(6)) > Date.now();
+}
 export function assertAdmin(request: NextRequest) {
-  const payload = verify(request.cookies.get("vc_admin")?.value);
-  if (!payload || !payload.startsWith("admin:") || Number(payload.split(":")[1]) < Date.now()) throw new HttpError(401, "请先登录管理后台。");
+  if (!isAdminSession(request.cookies.get("vc_admin")?.value)) throw new HttpError(401, "请先登录管理后台。");
 }
 function webUrl(value: string | null | undefined) {
   try { const url = new URL(value ?? ""); return ["http:", "https:"].includes(url.protocol) ? url : null; }
