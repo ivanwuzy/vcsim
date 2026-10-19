@@ -23,7 +23,7 @@ async function fixture(page: Page, initialDraws: LuckyDraw[] = [], locked = true
     if (!draw) {
       const prior = new Set(state.draws.filter(item => item.id !== body.replaceDrawId).flatMap(item => item.winners.map(winner => winner.playerId)));
       const candidates = people.filter(person => body.excludeWinners === false && !body.replaceDrawId || !prior.has(person.playerId));
-      draw = { id: crypto.randomUUID(), kind: "lucky", candidates, winners: candidates.slice(-body.count), created_at: new Date().toISOString(), request_key: body.key };
+      draw = { id: crypto.randomUUID(), kind: "lucky", candidates, winners: candidates.slice(0, body.count), created_at: new Date().toISOString(), request_key: body.key };
       state.draws = [...state.draws.filter(item => item.id !== body.replaceDrawId), draw];
     }
     if (loseResponse) { loseResponse = false; await route.abort("failed"); }
@@ -67,6 +67,39 @@ test("the lever saves once, reveals left to right, celebrates and restores saved
   await expect(page.getByTestId("lottery-machine").nth(0)).toContainText(state.draws[0].winners[0].institution);
   expect(requests).toHaveLength(1);
 });
+
+for (const size of [{ width: 1920, height: 1080 }, { width: 1366, height: 768 }]) {
+  test(`the last reel and celebration preserve the stage position at ${size.width}`, async ({ page }) => {
+    await fixture(page);
+    await page.setViewportSize(size);
+    await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+    if (size.width === 1920) await page.screenshot({ path: "artifacts/lottery-tech-preview-ready.png", animations: "disabled" });
+    await page.getByRole("button", { name: "摇杆：开始抽奖" }).click();
+    await expect(page.getByRole("button", { name: "跳过动画" })).toBeVisible();
+    await page.clock.runFor(4800);
+    const first = (await page.getByTestId("lottery-machine").first().elementHandle())!;
+    const dialogBefore = (await page.getByRole("dialog").boundingBox())!;
+    const machineBefore = (await first.boundingBox())!;
+    await page.clock.runFor(350);
+    await expect(page.getByTestId("lottery-celebration")).toBeVisible();
+    const dialogAfter = (await page.getByRole("dialog").boundingBox())!;
+    const machineAfter = (await page.getByTestId("lottery-machine").first().boundingBox())!;
+    console.log({ size, dialogShift: dialogAfter.y - dialogBefore.y, machineShift: machineAfter.y - machineBefore.y, retainedMachine: await first.evaluate(el => el.isConnected) });
+    expect(await first.evaluate(el => el.isConnected)).toBe(true);
+    expect(Math.abs(dialogAfter.y - dialogBefore.y)).toBeLessThan(1);
+    expect(Math.abs(dialogAfter.height - dialogBefore.height)).toBeLessThan(1);
+    expect(Math.abs(machineAfter.y - machineBefore.y)).toBeLessThan(1);
+    await page.clock.runFor(1500);
+    expect(await page.getByTestId("lottery-celebration").locator("canvas").evaluate((canvas: HTMLCanvasElement) => {
+      const pixels = canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height).data;
+      return pixels.some((value, index) => index % 4 === 3 && value > 0);
+    })).toBe(true);
+    if (size.width === 1920) await page.screenshot({ path: "artifacts/lottery-tech-preview-celebration.png" });
+    await page.clock.runFor(7000);
+    await expect(page.getByTestId("lottery-celebration")).toHaveCount(0);
+    expect((await page.getByRole("dialog").boundingBox())!.y).toBe(dialogAfter.y);
+  });
+}
 
 test("redrawing requires confirmation and additional awards use the requested count and exclusion choice", async ({ page }) => {
   const { state, requests } = await fixture(page);
@@ -140,6 +173,7 @@ test("slot machines fit projector sizes and large batches and remain usable with
     await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
     const modal = page.getByRole("dialog");
     expect(await modal.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    if (size.width >= 900) expect(await modal.evaluate(el => el.scrollHeight <= el.clientHeight)).toBe(true);
     const bounds = (await modal.boundingBox())!;
     expect(bounds.x).toBeGreaterThanOrEqual(0); expect(bounds.x + bounds.width).toBeLessThanOrEqual(size.width);
     await page.screenshot({ path: `artifacts/lottery-ready-${size.width}.png`, animations: "disabled" });
@@ -194,6 +228,8 @@ test("the real API persists screen draws and replacement awards and the host con
   await page.goto(`/admin/screen?event=${eventId}`);
   await page.getByRole("button", { name: "幸运观众抽奖", exact: true }).click();
   await expect(page.getByTestId("lottery-machine")).toHaveCount(5);
+  await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+  await page.screenshot({ path: "artifacts/lottery-tech-ready-1920.png", animations: "disabled" });
   await page.getByRole("button", { name: "摇杆：开始抽奖" }).click();
   await expect(page.getByRole("button", { name: "跳过动画" })).toBeVisible();
   let saved = await page.request.get(`/api/admin/lottery?event=${eventId}`).then(response => response.json()) as LotteryState;
@@ -202,6 +238,10 @@ test("the real API persists screen draws and replacement awards and the host con
   await page.clock.runFor(5300);
   await expect(page.getByTestId("lottery-machine").nth(4)).toHaveAttribute("data-revealed", "true");
   await page.screenshot({ path: "artifacts/lottery-winners-1920.png", animations: "disabled" });
+  await page.clock.runFor(1300);
+  await page.screenshot({ path: "artifacts/lottery-tech-celebration-1920.png" });
+  await page.clock.runFor(5000);
+  await page.screenshot({ path: "artifacts/lottery-tech-winners-1920.png", animations: "disabled" });
   await page.getByRole("button", { name: "重抽本轮" }).click();
   await page.screenshot({ path: "artifacts/lottery-redraw-confirm.png" });
   await page.getByRole("button", { name: "确认重抽" }).click();
