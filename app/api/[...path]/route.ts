@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import QRCode from "qrcode";
 import { assertAdmin, assertOrigin, cookieOptions, HttpError, rateLimit, sameSecret, sign, verify } from "../../../lib/security";
-import { adminAction, adminState, decide, eventMeta, getActiveEventId, getEvent, getRun, leaderboard, playerForToken, publicLeaderboard, publicMeta, register, resetPlayer, result, startRun } from "../../../lib/service";
+import { adminAction, adminState, decide, eventMeta, getActiveEventId, getEvent, getRun, leaderboard, lotteryState, playerForToken, publicLeaderboard, publicMeta, register, resetPlayer, result, startRun } from "../../../lib/service";
 import { getDb } from "../../../lib/db";
 import { createReadCache } from "../../../lib/read-cache";
 
@@ -25,7 +25,7 @@ const adminSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("settings"), title: text, topCount: z.number().int().min(1).max(100), luckyCount: z.number().int().min(1).max(100) }),
   z.object({ action: z.literal("import"), projects: z.array(projectSchema).length(50) }),
   ...["open", "close", "freeze", "delete"].map(action => z.object({ action: z.literal(action) })),
-  z.object({ action: z.literal("draw"), key: z.uuid(), count: z.number().int().min(1).max(100) }),
+  z.object({ action: z.literal("draw"), key: z.uuid(), count: z.number().int().min(1).max(100), excludeWinners: z.boolean().optional(), replaceDrawId: z.uuid().optional() }),
   z.object({ action: z.literal("tie"), key: z.uuid() }),
   z.object({ action: z.literal("recovery"), playerId: z.uuid() }),
   z.object({ action: z.literal("rename"), playerId: z.uuid(), name: text, institution: text }),
@@ -84,6 +84,11 @@ async function dispatch(request: NextRequest, context: { params: Promise<{ path:
       const parsed = adminSchema.parse(await request.json());
       const value = await adminAction(eventId, parsed.action, parsed); publicReads.clear();
       return reply(value);
+    }
+    if (route === "admin/lottery" && !post) {
+      assertAdmin(request);
+      const eventId = z.string().min(1).max(80).parse(request.nextUrl.searchParams.get("event"));
+      return reply(await lotteryState(eventId));
     }
     if (route === "admin/leaderboard" && !post) {
       assertAdmin(request);

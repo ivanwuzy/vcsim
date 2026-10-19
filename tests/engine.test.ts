@@ -9,7 +9,7 @@ const snapshot = generateSnapshot(PROJECTS, "test-world");
 const deck = snapshot.decks[0];
 const decisions = (count: number): Decision[] => deck.ids.map((id, i) => ({ projectId: id, choice: i < count ? "invest" : "pass", key: id }));
 describe("domestic historical content and sequential fund rules", () => {
-  it("has the 50 confirmed domestic v4.2 cases and six confirmed loss recoveries", () => {
+  it("has the 50 confirmed domestic v4.3 cases and six confirmed loss recoveries", () => {
     expect(PROJECTS).toHaveLength(50); expect(PROJECTS.every(p => p.real)).toBe(true);
     expect(PROJECTS.filter(p => p.market === "overseas")).toHaveLength(0);
     expect(PROJECTS.filter(p => p.editorial?.manualCase)).toHaveLength(50);
@@ -102,12 +102,15 @@ describe("domestic historical content and sequential fund rules", () => {
     expect(() => calculateValue([{ ...ledger[0], amount: 10_000_000 }], legacy)).toThrow("金额");
   });
   it("preserves confirmed returns and calculates original-currency, loss and retention returns", () => {
-    const expected = { 宇树: 1035, 沐曦: 364.175, 梅卡曼德: 100, 智谱: 564.4, Kimi: 500 / 3, 毫末: .1, 柔宇: .1 };
+    const expected = { 宇树: 280, 沐曦: 364.175, 梅卡曼德: 100, 智谱: 564.4, Kimi: 500 / 3, 毫末: .1, 柔宇: .1 };
     for (const [name, multiple] of Object.entries(expected)) {
       const p = PROJECTS.find(p => p.name.includes(name))!;
       expect(snapshot.paths[p.id].multipleBps).toBe(Math.round(multiple * 10000));
     }
     const scale = PROJECTS.find(p => p.name === "大疆创新")!;
+    const unitree = PROJECTS.find(p => p.name === "宇树科技")!;
+    expect(unitree.valuation.specifiedMultiple).toBe(280);
+    expect(valuationMultiple({ ...unitree.valuation, entryValue: 100, terminalValue: 103500 })).toBe(280);
     expect(valuationMultiple(scale.valuation)).toBeCloseTo(160 / 15);
     expect(valuationMultiple({ ...scale.valuation, retention: .5 })).toBeCloseTo(160 / 15 * .5);
     expect(() => valuationMultiple({ ...scale.valuation, retention: 1.1 })).toThrow();

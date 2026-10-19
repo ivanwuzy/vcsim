@@ -6,6 +6,7 @@ import { getDb, transaction, type DB } from "./db";
 import { hash, HttpError, newToken } from "./security";
 import { createReadCache } from "./read-cache";
 import type { Decision, Project, RunView, Snapshot } from "./types";
+import { luckyCandidates, type LuckyDraw, type LotteryState } from "./lottery";
 
 export type EventRow = { id: string; title: string; status: string; mode: string; snapshot: Snapshot; settings: { topCount: number; luckyCount: number }; frozen_rows: LeaderRow[] | null };
 export type PlayerRow = { id: string; event_id: string; name: string; institution: string; identity_key: string; token_hash: string; recovery_hash: string | null };
@@ -13,7 +14,7 @@ export type RunRow = { id: string; player_id: string; event_id: string; deck_id:
 export type LeaderRow = { playerId: string; name: string; institution: string; profit: number; rank: number };
 const globalService = globalThis as typeof globalThis & { vcSeed?: Promise<void>; vcSeedVersion?: string };
 // Rule upgrades must not overwrite an unchanged bank or an administrator's imported cards.
-const BANK_VERSION = `2026.10-workbook-v4.2:${hash(JSON.stringify(PROJECTS))}`;
+const BANK_VERSION = `2026.10-workbook-v4.3:${hash(JSON.stringify(PROJECTS))}`;
 const SEED_VERSION = `${CONTENT_VERSION}:${BANK_VERSION}`;
 const snapshots = createReadCache<Snapshot>(Infinity, 16);
 type EventHeader = Omit<EventRow, "snapshot"> & { snapshot_revision: string };
@@ -225,11 +226,23 @@ export async function adminState(eventId?: string) {
   const replay = { replayEnabled: await replayEnabled(db) };
   if (!event) return { event: null, events, activeEventId, players: [], draws: [], audits: [], leaderboard: [], issues: [], publicUrl, ...replay };
   const players = (await db.query<{ id: string; name: string; institution: string; status: string | null; progress: number; profit: string | null }>(`SELECT p.id,p.name,p.institution,r.status,COALESCE(jsonb_array_length(r.decisions),0) AS progress,r.profit FROM players p LEFT JOIN runs r ON r.player_id=p.id WHERE p.event_id=$1 ORDER BY p.created_at`, [event.id])).rows;
-  const draws = (await db.query("SELECT id,kind,candidates,winners,created_at FROM draws WHERE event_id=$1 ORDER BY created_at", [event.id])).rows;
+  const draws = (await db.query("SELECT id,kind,candidates,winners,created_at FROM draws WHERE event_id=$1 AND kind IN ('lucky','tie') ORDER BY created_at", [event.id])).rows;
   const audits = (await db.query("SELECT action,detail,created_at FROM audit_log WHERE event_id=$1 OR event_id IS NULL ORDER BY created_at DESC LIMIT 30", [event.id])).rows;
   return { event, events, activeEventId, players, draws, audits, leaderboard: await leaderboard(event), issues: contentIssues(event.snapshot.projects), publicUrl, ...replay };
 }
 async function audit(db: DB, eventId: string | null, action: string, detail: unknown) { await db.query("INSERT INTO audit_log(id,event_id,action,detail) VALUES($1,$2,$3,$4)", [randomUUID(), eventId, action, JSON.stringify(detail)]); }
+export async function lotteryState(eventId: string): Promise<LotteryState> {
+  await ensureSeed();
+  return transaction(async db => {
+    const event = await getEvent(eventId, db, true);
+    const draws = (await db.query<LuckyDraw>("SELECT id,kind,candidates,winners,created_at,request_key FROM draws WHERE event_id=$1 AND kind='lucky' ORDER BY created_at,id", [event.id])).rows;
+    const candidates = event.frozen_rows ?? [];
+    // Use corrected names from the locked roster when displaying saved awards.
+    const names = new Map(candidates.map(player => [player.playerId, player]));
+    return { eventId: event.id, title: event.title, locked: event.status === "frozen", defaultCount: event.settings.luckyCount, candidates,
+      draws: draws.map(draw => ({ ...draw, candidates: draw.candidates.map(player => names.get(player.playerId) ?? player), winners: draw.winners.map(player => names.get(player.playerId) ?? player) })) };
+  });
+}
 export async function adminAction(eventId: string | undefined, action: string, payload: Record<string, unknown>) {
   await ensureSeed();
   return transaction(async db => {
@@ -288,9 +301,12 @@ export async function adminAction(eventId: string | undefined, action: string, p
       await db.query("UPDATE events SET status='frozen',frozen_rows=$1,frozen_at=NOW() WHERE id=$2", [JSON.stringify(rows), event.id]);
     } else if (action === "draw" || action === "tie") {
       if (event.status !== "frozen") throw new HttpError(409, "冻结榜单后才能抽奖。");
-      const existing = (await db.query("SELECT * FROM draws WHERE event_id=$1 AND request_key=$2", [event.id, payload.key])).rows[0];
-      if (existing) return existing;
-      const draws = (await db.query<{ winners: LeaderRow[]; kind: string }>("SELECT winners,kind FROM draws WHERE event_id=$1", [event.id])).rows;
+      const existing = (await db.query<LuckyDraw>("SELECT * FROM draws WHERE event_id=$1 AND request_key=$2", [event.id, payload.key])).rows[0];
+      if (existing) {
+        if (existing.kind === "lucky-replaced") throw new HttpError(409, "本轮结果已被重抽替换，请刷新中奖名单。");
+        return existing;
+      }
+      const draws = (await db.query<LuckyDraw>("SELECT id,kind,candidates,winners,created_at FROM draws WHERE event_id=$1 AND kind IN ('lucky','tie')", [event.id])).rows;
       const rows = event.frozen_rows!;
       let candidates: LeaderRow[], count: number;
       if (action === "tie") {
@@ -300,15 +316,22 @@ export async function adminAction(eventId: string | undefined, action: string, p
         count = boundary ? limit - rows.filter(r => r.profit > boundary.profit).length : 0;
         if (candidates.length <= count || count <= 0) throw new HttpError(409, "没有需要抽签的边界并列。");
       } else {
-        const past = new Set(draws.filter(d => d.kind === "lucky").flatMap(d => d.winners.map(w => w.playerId)));
-        candidates = rows.filter(r => !past.has(r.playerId)); count = Math.min(Number(payload.count ?? event.settings.luckyCount), candidates.length);
+        const requested = Number(payload.count ?? event.settings.luckyCount);
+        if (!Number.isInteger(requested) || requested < 1 || requested > 100) throw new HttpError(422, "抽取人数须为1至100的整数。");
+        if (payload.excludeWinners !== undefined && typeof payload.excludeWinners !== "boolean") throw new HttpError(422, "排除已中奖人员须为布尔值。");
+        const replaceId = payload.replaceDrawId as string | undefined;
+        if (replaceId && !draws.some(draw => draw.id === replaceId && draw.kind === "lucky")) throw new HttpError(409, "本轮结果已更新，请刷新中奖名单后再重抽。");
+        candidates = luckyCandidates(rows, draws, replaceId ? true : payload.excludeWinners !== false, replaceId);
+        count = Math.min(requested, candidates.length);
         if (!count) throw new HttpError(409, "没有可抽取的完成者。");
       }
       const pool = [...candidates], winners: LeaderRow[] = [];
       for (let i = 0; i < count; i++) winners.push(pool.splice(randomInt(pool.length), 1)[0]);
       const draw = { id: randomUUID(), candidates, winners, kind: action === "tie" ? "tie" : "lucky" };
-      await db.query("INSERT INTO draws(id,event_id,request_key,kind,candidates,winners) VALUES($1,$2,$3,$4,$5,$6)", [draw.id, event.id, payload.key, draw.kind, JSON.stringify(candidates), JSON.stringify(winners)]);
-      await audit(db, event.id, action, { drawId: draw.id, candidates: candidates.length, winners: winners.map(w => w.playerId) }); return draw;
+      // Retain superseded requests for idempotency; only active awards count toward exclusions and exports.
+      if (action === "draw" && payload.replaceDrawId) await db.query("UPDATE draws SET kind='lucky-replaced' WHERE id=$1 AND event_id=$2", [payload.replaceDrawId, event.id]);
+      const saved = (await db.query<LuckyDraw>("INSERT INTO draws(id,event_id,request_key,kind,candidates,winners) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,kind,candidates,winners,created_at", [draw.id, event.id, payload.key, draw.kind, JSON.stringify(candidates), JSON.stringify(winners)])).rows[0];
+      await audit(db, event.id, payload.replaceDrawId ? "redraw" : action, { drawId: draw.id, replacedDrawId: payload.replaceDrawId, excludeWinners: payload.replaceDrawId ? true : payload.excludeWinners !== false, candidates: candidates.length, winners: winners.map(w => w.playerId) }); return saved;
     } else if (action === "recovery") {
       const code = newToken().slice(0, 16);
       const r = await db.query("UPDATE players SET recovery_hash=$1 WHERE id=$2 AND event_id=$3 RETURNING id", [hash(code), payload.playerId, event.id]);

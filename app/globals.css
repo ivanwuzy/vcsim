@@ -812,6 +812,7 @@ body:has(.player-theme[data-theme="dark"]) { background: #0c1019; }
 .live-tools a, .live-tools button { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid #ffffff24; border-radius: 10px; color: #bcc3d0; }
 .live-tools a:hover, .live-tools button:hover { color: white; background: #ffffff10; }
 .live-tools .live-theme-toggle { width: auto; min-width: 76px; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 0 10px; font-size: 12px; }
+.live-tools .live-lottery-toggle { width: auto; display: flex; align-items: center; gap: 7px; padding: 0 13px; border-color: #c8a565; color: #f5d493; background: #ad85402b; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .live-heading { margin: clamp(20px, 3.6vh, 45px) 0 clamp(20px, 3vh, 38px); display: flex; justify-content: space-between; align-items: flex-end; gap: 20px; flex-shrink: 0; }
 .live-eyebrow { font-size: clamp(10px, .85vw, 16px); letter-spacing: 2px; color: #a4a9b4; }
 .live-eyebrow > span { margin: 0 12px; color: #9c8554; }
@@ -992,6 +993,7 @@ body:has(.player-theme[data-theme="dark"]) { background: #0c1019; }
 .live-screen[data-theme="light"] .live-tools button { border-color: #c9d0dc; color: #40516a; background: #ffffff80; }
 .live-screen[data-theme="light"] .live-tools a:hover,
 .live-screen[data-theme="light"] .live-tools button:hover { color: #1c283a; background: #e4eaf3; }
+.live-screen[data-theme="light"] .live-tools .live-lottery-toggle { border-color: #c6a568; color: #88652c; background: #f5e7c9; }
 .live-screen[data-theme="light"] .live-heading h1 > span,
 .live-screen[data-theme="light"] .live-heading-note,
 .live-screen[data-theme="light"] .live-section-label svg,

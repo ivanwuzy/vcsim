@@ -1,11 +1,12 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, Crown, Maximize, Minimize, Moon, Sparkles, Sun, Trophy } from "lucide-react";
+import { ArrowLeft, Crown, Gift, Maximize, Minimize, Moon, Sparkles, Sun, Trophy } from "lucide-react";
 import { fundReturn, newPodiumRecords, type BoardData } from "../lib/leaderboard";
 import { Brand } from "./brand";
 import { MedalCelebration, type Celebration } from "./medal-celebration";
 import { PodiumCard } from "./podium-card";
 import { useLeaderboard } from "./use-leaderboard";
+import { LotteryDraw } from "./lottery-draw";
 
 const medals = ["金", "银", "铜"];
 const clock = (date: Date) => date.toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
@@ -15,6 +16,8 @@ export default function LiveScreen({ eventId }: { eventId: string }) {
   const previous = useRef<BoardData | null>(null), sequence = useRef(0);
   const [queue, setQueue] = useState<Celebration[]>([]);
   const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [lottery, setLottery] = useState(false);
+  const closeLottery = useCallback(() => setLottery(false), []);
   const [rotation, setRotation] = useState(0), [preview, setPreview] = useState(false), [fullscreen, setFullscreen] = useState(false), [fullscreenError, setFullscreenError] = useState("");
   const complete = useCallback(() => setQueue(items => items.slice(1)), []);
   useEffect(() => {
@@ -71,7 +74,7 @@ export default function LiveScreen({ eventId }: { eventId: string }) {
   const visibleRows = rest.slice(page * 7, page * 7 + 7);
   const status = error ? "连接中断 · 自动重连" : !data ? "正在连接榜单" : data.frozen ? "最终榜单 · 已冻结" : data.status === "open" ? "实时榜单 · 5秒更新" : data.status === "closed" ? "活动已停止 · 保留成绩" : "等待活动启动";
   return <main className="live-screen" data-theme={theme}>
-    <header className="live-header"><Brand href="/admin" /><div className="live-event header-right"><span className="event-dot" />{data?.title || "具身创投之夜"}{data?.mode === "demo" && <span className="live-demo">演示活动</span>}</div><div className="live-tools"><a href="/admin" aria-label="返回主办方工作台" title="返回主办方工作台"><ArrowLeft size={17} /></a><button className="live-theme-toggle" onClick={toggleTheme} aria-label={theme === "dark" ? "切换为浅色" : "切换为深色"} title={theme === "dark" ? "切换为浅色" : "切换为深色"}>{theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}<span>{theme === "dark" ? "浅色" : "深色"}</span></button><button onClick={toggleFullscreen} aria-label={fullscreen ? "退出全屏" : "全屏展示"} title={fullscreen ? "退出全屏" : "全屏展示"}>{fullscreen ? <Minimize size={17} /> : <Maximize size={17} />}</button></div></header>
+    <header className="live-header"><Brand href="/admin" /><div className="live-event header-right"><span className="event-dot" />{data?.title || "具身创投之夜"}{data?.mode === "demo" && <span className="live-demo">演示活动</span>}</div><div className="live-tools"><button className="live-lottery-toggle" onClick={() => { setPreview(false); setLottery(true); }} aria-haspopup="dialog"><Gift size={17} /><span>幸运观众抽奖</span></button><a href="/admin" aria-label="返回主办方工作台" title="返回主办方工作台"><ArrowLeft size={17} /></a><button className="live-theme-toggle" onClick={toggleTheme} aria-label={theme === "dark" ? "切换为浅色" : "切换为深色"} title={theme === "dark" ? "切换为浅色" : "切换为深色"}>{theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}<span>{theme === "dark" ? "浅色" : "深色"}</span></button><button onClick={toggleFullscreen} aria-label={fullscreen ? "退出全屏" : "全屏展示"} title={fullscreen ? "退出全屏" : "全屏展示"}>{fullscreen ? <Minimize size={17} /> : <Maximize size={17} />}</button></div></header>
     <div className="live-heading"><div><span className="live-eyebrow">THE PARTNERS BOARD <span>/</span> 具身 VC 投资模拟器</span><h1>眼光，会有<span>回报。</span></h1></div><div className="live-heading-note"><Trophy size={24} strokeWidth={1.3} /><p>投资未来的人，<br /><strong>此刻站在这里。</strong></p></div></div>
     {fullscreenError && <p className="live-warning" role="alert">{fullscreenError}</p>}
     {error && <p className="live-warning" role="alert">{error}。{data ? "正在展示最近一次成功更新的榜单，恢复后自动同步。" : "正在自动重试连接。"}</p>}
@@ -94,6 +97,7 @@ export default function LiveScreen({ eventId }: { eventId: string }) {
       </section>
     </div>
     <footer className="live-footer"><div className={`live-status ${error ? "disconnected" : data?.status === "open" ? "is-live" : ""}`}><i /><span>{status}</span>{updatedAt && <small>最近同步 {clock(updatedAt)}</small>}</div><div className="live-participants"><strong>{data?.rows.length ?? 0}</strong><span>位合伙人已结算</span></div><div className="live-footnote">初始基金 {data?.initial ? `${data.initial / 100_000_000}亿元` : "—"} · 全部回报为模拟</div><div className="preview-controls"><button className="preview-toggle" onClick={() => setPreview(value => !value)} aria-expanded={preview}><Sparkles size={14} />动效预览 <small>临时</small></button>{preview && <div className="preview-menu"><p>仅播放效果，榜单成绩不变</p>{medals.map((medal, index) => <button className={`medal-${index + 1}`} onClick={() => playPreview(index + 1)} key={medal}>{medal} · {index === 0 ? "刷新最高纪录" : `新晋第${index + 1}名`}</button>)}</div>}</div></footer>
-    {!!queue.length && <MedalCelebration key={queue[0].id} celebration={queue[0]} onComplete={complete} />}
+    {!lottery && !!queue.length && <MedalCelebration key={queue[0].id} celebration={queue[0]} onComplete={complete} />}
+    <LotteryDraw key={eventId} eventId={eventId} open={lottery} onClose={closeLottery} />
   </main>;
 }

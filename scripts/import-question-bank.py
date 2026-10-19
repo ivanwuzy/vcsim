@@ -1,4 +1,4 @@
-"""Import the confirmed v4.2 bank without changing the source workbook."""
+"""Import the confirmed v4 bank without changing the source workbook."""
 import hashlib, json, math, pathlib, re, sys, zipfile, xml.etree.ElementTree as ET
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -36,6 +36,8 @@ def rows_by_name(cells, column, first_row):
     return rows
 
 def build_projects(book):
+    version_match = re.search(r'v\d+\.\d+', book.stem)
+    version = version_match[0] if version_match else 'v4'
     sheets = read_sheets(book)
     main, _ = sheets['题库底稿']; returns, formulas = sheets['回报测算']; sources, _ = sheets['资料口径']
     if sources.get('E7') != '进入估值及逻辑': raise ValueError('Expected v4 workbook layout; older importer is preserved in Git history.')
@@ -93,7 +95,7 @@ def build_projects(book):
             'traction': main[f'L{r}'], 'risk': main[f'M{r}'], 'history': main[f'K{r}'],
             'lesson': '估值增长不等于投资人已实现收益。' + (returns.get(f'R{cr}') or ''),
             'sensitivity': ['产品验证', '客户与交付', '资金周期'],
-            'sources': [{'url': u, 'publishedAt': published(u), 'note': 'v4.2原研究资料；后续报道仅供复盘，结算采用回报测算中的最新人工确认值。'} for u in urls],
+            'sources': [{'url': u, 'publishedAt': published(u), 'note': 'v4原研究资料；后续报道仅供复盘，结算采用回报测算中的最新人工确认值。'} for u in urls],
             'review': 'draft', 'reviewedAt': None, 'decisionEvidence': None,
             'editorial': {
                 'manualCase': True, 'sourceBook': book.name, 'sourceRow': r, 'sourceSha256': sha,
@@ -117,7 +119,7 @@ def build_projects(book):
         projects.append(p)
     if len({p['id'] for p in projects}) != 50: raise ValueError('Duplicate case IDs')
     manifest = {
-        'version': 'v4.2', 'sourceBook': str(book.relative_to(ROOT)) if book.is_relative_to(ROOT) else book.name,
+        'version': version, 'sourceBook': str(book.relative_to(ROOT)) if book.is_relative_to(ROOT) else book.name,
         'sourceSha256': sha, 'count': 50, 'realCases': 50, 'manualCases': 50, 'overseasCases': 0,
         'years': {p['name']: p['decisionYear'] for p in projects},
         'returns': {name: returns[f'K{cr}'] for name, cr in return_rows.items()},
@@ -125,9 +127,15 @@ def build_projects(book):
     return projects, manifest
 
 if __name__ == '__main__':
-    book = pathlib.Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / '具身VC投资模拟器_题库v4.2.xlsx'
-    projects, manifest = build_projects(book); text = json.dumps(projects, ensure_ascii=False, indent=2)
-    (ROOT / 'data/projects.ts').write_text('import type { Project } from "../lib/types";\n\n// Generated from the confirmed v4.2 workbook by scripts/import-question-bank.py.\nexport const PROJECTS: Project[] = ' + text + ';\n')
+    book = pathlib.Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / '具身VC投资模拟器_题库v4.3.xlsx'
+    projects, manifest = build_projects(book)
+    # Worksheet sorting must not reorder the existing bank and its exported review.
+    previous = ROOT / 'docs/题库初稿.json'
+    if previous.exists():
+        order = {p['id']: i for i, p in enumerate(json.loads(previous.read_text()))}
+        projects.sort(key=lambda p: order.get(p['id'], len(order)))
+    text = json.dumps(projects, ensure_ascii=False, indent=2)
+    (ROOT / 'data/projects.ts').write_text(f'import type {{ Project }} from "../lib/types";\n\n// Generated from the confirmed {manifest["version"]} workbook by scripts/import-question-bank.py.\nexport const PROJECTS: Project[] = ' + text + ';\n')
     (ROOT / 'docs/题库初稿.json').write_text(text + '\n')
     (ROOT / 'data/question-bank-manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps({k: v for k, v in manifest.items() if k not in ['returns', 'years']}, ensure_ascii=False))

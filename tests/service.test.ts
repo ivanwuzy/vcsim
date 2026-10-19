@@ -134,7 +134,7 @@ describe("persistent event lifecycle", () => {
     await adminAction(eventId, "rename", { playerId: players[0].player.id, name: "已纠正", institution: "新机构" });
     expect((await leaderboard(await getEvent(eventId))).find(p => p.playerId === players[0].player.id)?.name).toBe("已纠正");
   });
-  it("uses the confirmed v4.2 domestic bank for new activities and accepts overseas imports", async () => {
+  it("uses the confirmed v4.3 domestic bank for new activities and accepts overseas imports", async () => {
     const created = await adminAction(eventId, "create", { title: "国内题库验证", mode: "demo" }) as { eventId: string };
     const projects = (await getEvent(created.eventId)).snapshot.projects;
     expect(projects).toHaveLength(50);
