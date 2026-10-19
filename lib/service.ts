@@ -299,10 +299,23 @@ export async function adminAction(eventId: string | undefined, action: string, p
       if (event.status !== "closed") throw new HttpError(409, "请先停止活动，再冻结榜单。");
       const rows = await leaderboard(event, db);
       await db.query("UPDATE events SET status='frozen',frozen_rows=$1,frozen_at=NOW() WHERE id=$2", [JSON.stringify(rows), event.id]);
+    } else if (action === "clear-lottery") {
+      if (payload.confirmed !== true) throw new HttpError(422, "请先确认清空抽奖结果。");
+      if (event.status !== "frozen") throw new HttpError(409, "只能清空已冻结活动的幸运抽奖结果。");
+      const expected = payload.drawIds;
+      if (!Array.isArray(expected) || !expected.length || !expected.every(id => typeof id === "string")) throw new HttpError(422, "请指定需要清空的抽奖轮次。");
+      const active = (await db.query<LuckyDraw>("SELECT id,winners FROM draws WHERE event_id=$1 AND kind='lucky'", [event.id])).rows;
+      // A retry may succeed again, but must never clear new awards made after confirmation.
+      if (!active.length) return { ok: true, clearedCount: 0 };
+      if (active.length !== new Set(expected).size || active.some(draw => !expected.includes(draw.id))) throw new HttpError(409, "抽奖结果已更新，请刷新工作台后重新确认清空。");
+      await db.query("UPDATE draws SET kind='lucky-cleared' WHERE event_id=$1 AND kind IN ('lucky','lucky-replaced')", [event.id]);
+      await audit(db, event.id, action, { drawIds: active.map(draw => draw.id), clearedCount: active.length, clearedWinners: active.reduce((sum, draw) => sum + draw.winners.length, 0) });
+      return { ok: true, clearedCount: active.length };
     } else if (action === "draw" || action === "tie") {
       if (event.status !== "frozen") throw new HttpError(409, "冻结榜单后才能抽奖。");
       const existing = (await db.query<LuckyDraw>("SELECT * FROM draws WHERE event_id=$1 AND request_key=$2", [event.id, payload.key])).rows[0];
       if (existing) {
+        if (existing.kind === "lucky-cleared") throw new HttpError(409, "抽奖结果已清空，请刷新名单后重新抽奖。");
         if (existing.kind === "lucky-replaced") throw new HttpError(409, "本轮结果已被重抽替换，请刷新中奖名单。");
         return existing;
       }

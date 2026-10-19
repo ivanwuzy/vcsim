@@ -26,6 +26,7 @@ const adminSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("import"), projects: z.array(projectSchema).length(50) }),
   ...["open", "close", "freeze", "delete"].map(action => z.object({ action: z.literal(action) })),
   z.object({ action: z.literal("draw"), key: z.uuid(), count: z.number().int().min(1).max(100), excludeWinners: z.boolean().optional(), replaceDrawId: z.uuid().optional() }),
+  z.object({ action: z.literal("clear-lottery"), confirmed: z.literal(true), drawIds: z.array(z.uuid()).min(1) }),
   z.object({ action: z.literal("tie"), key: z.uuid() }),
   z.object({ action: z.literal("recovery"), playerId: z.uuid() }),
   z.object({ action: z.literal("rename"), playerId: z.uuid(), name: text, institution: text }),
