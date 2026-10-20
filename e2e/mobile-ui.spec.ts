@@ -252,7 +252,7 @@ test("settlement stays in one screen and opens complete reviews on demand", asyn
     // Older WebViews ignore max-height declarations using svh/dvh.
     await route.fulfill({ response, body: legacyViewportUnits ? css.replace(/max-height:[^;{}]*(?:svh|dvh)[^;{}]*;/g, "") : css });
   });
-  for (const size of [{ width: 390, height: 844, legacy: true }, { width: 375, height: 667 }, { width: 390, height: 664 }, { width: 390, height: 844 }, { width: 430, height: 932 }]) {
+  for (const size of [{ width: 390, height: 844, legacy: true }, { width: 375, height: 667 }, { width: 390, height: 664 }, { width: 390, height: 844 }, { width: 430, height: 932 }, { width: 1440, height: 1000 }]) {
     legacyViewportUnits = size.legacy ?? false;
     await page.setViewportSize({ width: size.width, height: size.height }); await page.goto("/");
     await expect(page.getByRole("heading", { name: "选择有了回响。" })).toBeVisible();
@@ -286,14 +286,22 @@ test("settlement stays in one screen and opens complete reviews on demand", asyn
       const row = (await page.locator(".review-toggle").nth(3).boundingBox())!;
       await cdp.send("Input.synthesizeScrollGesture", { x: row.x + row.width / 2, y: row.y + row.height / 2, yDistance: -300, speed: 500, preventFling: true, gestureSourceType: "touch" });
       await expect.poll(() => dialog.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+      await cdp.send("Emulation.setEmitTouchEventsForMouse", { enabled: size.width < 701, configuration: "mobile" });
+      await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: size.width < 701 });
       await cdp.detach();
     }
-    await dialog.hover();
-    await page.mouse.wheel(0, 600);
+    await dialog.evaluate(el => { el.scrollTop = 0; });
+    // Trackpad wheel events can land on the fullscreen overlay beside the narrow dialog.
+    await page.mouse.move(5, size.height / 2);
+    await page.mouse.wheel(20, 600);
     await expect.poll(() => dialog.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+    const beforeWheel = await dialog.evaluate(el => el.scrollTop);
+    await dialog.hover();
+    for (let i = 0; i < 6; i++) await page.mouse.wheel(-2, 20);
+    await expect.poll(() => dialog.evaluate(el => el.scrollTop)).toBeGreaterThan(beforeWheel);
     await page.locator(".review-toggle").last().scrollIntoViewIfNeeded();
     await expect(page.locator(".review-toggle").last()).toBeInViewport();
-    await dialog.hover();
+    await page.mouse.move(5, size.height / 2);
     await page.mouse.wheel(0, -10000);
     await expect.poll(() => dialog.evaluate(el => el.scrollTop)).toBe(0);
     const first = page.locator(".review-toggle").first();
@@ -329,6 +337,10 @@ test("settlement stays in one screen and opens complete reviews on demand", asyn
     await expect(page.locator(".highlight-missed")).toHaveCSS("background-color", "rgb(72, 40, 50)");
     await expect(page.locator(".highlight-missed > span")).toHaveCSS("color", "rgb(255, 155, 176)");
     await button.click();
+    await expect.poll(() => dialog.evaluate(el => el.scrollTop)).toBe(0);
+    await page.mouse.move(5, size.height / 2);
+    await page.mouse.wheel(0, 180);
+    await expect.poll(() => dialog.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
     await expect(page.locator(".review-choice.invest").first()).toHaveCSS("color", "rgb(116, 214, 161)");
     await expect(page.locator(".review-choice.pass").first()).toHaveCSS("color", "rgb(255, 155, 176)");
     await page.getByRole("button", { name: "关闭复盘" }).click();

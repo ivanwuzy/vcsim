@@ -18,7 +18,22 @@ export default function Game() {
   const [registered, setRegistered] = useState(false), [tutorial, setTutorial] = useState(false), [pending, setPending] = useState<Pending | null>(null);
   const [dx, setDx] = useState(0), drag = useRef<{ x: number; y: number; dx: number; pointerId: number } | null>(null), lock = useRef(false);
   const [rules, setRules] = useState(false), [expanded, setExpanded] = useState<string | null>(null), [showReviews, setShowReviews] = useState(false);
+  const reviewModal = useRef<HTMLElement>(null);
   const [selectedAmount, setAmount] = useState(5_000_000);
+  useEffect(() => {
+    if (!showReviews) return;
+    const modal = reviewModal.current, backdrop = modal?.parentElement;
+    if (!modal || !backdrop) return;
+    // Device emulation still sends trackpad input as wheel events, including over the backdrop.
+    const scroll = (event: WheelEvent) => {
+      if (event.ctrlKey || event.deltaY === 0) return;
+      event.preventDefault();
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? modal.clientHeight : 1;
+      modal.scrollTop += event.deltaY * unit;
+    };
+    backdrop.addEventListener("wheel", scroll, { passive: false });
+    return () => backdrop.removeEventListener("wheel", scroll);
+  }, [showReviews]);
   useEffect(() => {
     try {
       const saved = localStorage.getItem("vc-game-theme");
@@ -179,7 +194,7 @@ export default function Game() {
       <a className="btn primary wide" href={boardUrl}>看看合伙人排行榜 <ArrowUpRight size={18} /></a>
       <div className="complete-note"><Check size={15} /> 已进入本场幸运抽奖候选池，等候活动收尾揭晓。</div>
       <button className="btn wide review-entry" onClick={() => setShowReviews(true)}>查看 {result.seen} 个项目复盘 <ArrowRight size={17} /></button>
-      {showReviews && <div className="modal-backdrop"><section className="modal review-modal" role="dialog" aria-modal="true" aria-label="项目复盘"><button className="close-modal" aria-label="关闭复盘" onClick={() => setShowReviews(false)}><X /></button><div className="review-heading"><h2>原来，这就是他们。</h2><p>已看过的{result.seen}个项目 · 点击展开投资明细</p></div>
+      {showReviews && <div className="modal-backdrop"><section ref={reviewModal} className="modal review-modal" role="dialog" aria-modal="true" aria-label="项目复盘"><button className="close-modal" aria-label="关闭复盘" onClick={() => setShowReviews(false)}><X /></button><div className="review-heading"><h2>原来，这就是他们。</h2><p>已看过的{result.seen}个项目 · 点击展开投资明细</p></div>
       <section className="reviews">{result.reviews.map(p => {
         const invested = p.choice === "invest";
         const profit = invested ? p.profit : 0;
