@@ -232,7 +232,7 @@ test("native touch scroll reads short-screen clues and right swipe commits the s
   } finally { await context.close(); }
 });
 
-test("settlement stays in one screen and opens complete reviews on demand", async ({ page }) => {
+test("settlement stays in one screen and opens complete reviews on demand", async ({ page, browserName }) => {
   const paths = PROJECTS.map(p => samplePath(p, "review-ui"));
   const lossIndex = paths.findIndex(p => p.multipleBps < 10000);
   expect(lossIndex).toBeGreaterThan(0);
@@ -245,8 +245,16 @@ test("settlement stays in one screen and opens complete reviews on demand", asyn
     const path = new URL(route.request().url()).pathname;
     return route.fulfill({ json: path.endsWith("/result") ? result : path === "/api/session" ? { meta, run, player: run.player } : meta });
   });
-  for (const size of [{ width: 375, height: 667 }, { width: 390, height: 664 }, { width: 390, height: 844 }, { width: 430, height: 932 }]) {
-    await page.setViewportSize(size); await page.goto("/");
+  let legacyViewportUnits = false;
+  await page.route("**/*.css*", async route => {
+    const response = await route.fetch();
+    const css = await response.text();
+    // Older WebViews ignore max-height declarations using svh/dvh.
+    await route.fulfill({ response, body: legacyViewportUnits ? css.replace(/max-height:[^;{}]*(?:svh|dvh)[^;{}]*;/g, "") : css });
+  });
+  for (const size of [{ width: 390, height: 844, legacy: true }, { width: 375, height: 667 }, { width: 390, height: 664 }, { width: 390, height: 844 }, { width: 430, height: 932 }]) {
+    legacyViewportUnits = size.legacy ?? false;
+    await page.setViewportSize({ width: size.width, height: size.height }); await page.goto("/");
     await expect(page.getByRole("heading", { name: "选择有了回响。" })).toBeVisible();
     await expect(page.locator(".highlight")).toHaveCount(2);
     await expect(page.locator(".highlight > span")).toHaveText(["最成功的一笔", "已跳过的最大机会"]);
@@ -268,6 +276,26 @@ test("settlement stays in one screen and opens complete reviews on demand", asyn
     await button.click();
     await expect(page.getByRole("dialog", { name: "项目复盘" })).toBeVisible();
     await expect(page.locator(".review")).toHaveCount(50);
+    const dialog = page.getByRole("dialog", { name: "项目复盘" });
+    const dialogBox = (await dialog.boundingBox())!;
+    expect(dialogBox.y).toBeGreaterThanOrEqual(0);
+    expect(dialogBox.y + dialogBox.height).toBeLessThanOrEqual(size.height);
+    if (browserName === "chromium") {
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+      const row = (await page.locator(".review-toggle").nth(3).boundingBox())!;
+      await cdp.send("Input.synthesizeScrollGesture", { x: row.x + row.width / 2, y: row.y + row.height / 2, yDistance: -300, speed: 500, preventFling: true, gestureSourceType: "touch" });
+      await expect.poll(() => dialog.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+      await cdp.detach();
+    }
+    await dialog.hover();
+    await page.mouse.wheel(0, 600);
+    await expect.poll(() => dialog.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+    await page.locator(".review-toggle").last().scrollIntoViewIfNeeded();
+    await expect(page.locator(".review-toggle").last()).toBeInViewport();
+    await dialog.hover();
+    await page.mouse.wheel(0, -10000);
+    await expect.poll(() => dialog.evaluate(el => el.scrollTop)).toBe(0);
     const first = page.locator(".review-toggle").first();
     await expect(first.locator(".review-name strong")).toHaveText(reviews[0].alias);
     await expect(first.locator(".review-name small")).toHaveText(`参考原型：${reviews[0].name} · ${reviews[0].year} 年`);
