@@ -9,7 +9,7 @@ const snapshot = generateSnapshot(PROJECTS, "test-world");
 const deck = snapshot.decks[0];
 const decisions = (count: number): Decision[] => deck.ids.map((id, i) => ({ projectId: id, choice: i < count ? "invest" : "pass", key: id }));
 describe("domestic historical content and sequential fund rules", () => {
-  it("has the 50 confirmed domestic v4.3 cases and six confirmed loss recoveries", () => {
+  it("has the 50 confirmed domestic v4.4 cases and six confirmed loss recoveries", () => {
     expect(PROJECTS).toHaveLength(50); expect(PROJECTS.every(p => p.real)).toBe(true);
     expect(PROJECTS.filter(p => p.market === "overseas")).toHaveLength(0);
     expect(PROJECTS.filter(p => p.editorial?.manualCase)).toHaveLength(50);

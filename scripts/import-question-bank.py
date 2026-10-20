@@ -127,7 +127,7 @@ def build_projects(book):
     return projects, manifest
 
 if __name__ == '__main__':
-    book = pathlib.Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / '具身VC投资模拟器_题库v4.3.xlsx'
+    book = pathlib.Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / '具身VC投资模拟器_题库v4.4.xlsx'
     projects, manifest = build_projects(book)
     # Worksheet sorting must not reorder the existing bank and its exported review.
     previous = ROOT / 'docs/题库初稿.json'
