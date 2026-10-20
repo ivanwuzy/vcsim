@@ -7,12 +7,16 @@ export const MAX_TICKET = INITIAL * .2;
 export const TOTAL = 50;
 export const MAX_INVESTMENTS = 20;
 export const SETTLEMENT_YEAR = 2031;
-export const CONTENT_VERSION = "2026.10-workbook-v4.2-confirmed-returns";
+export const CONTENT_VERSION = "2026.10-workbook-v4.4-chronological-2015";
 export const RULES: GameRules = { initial: INITIAL, ticket: TICKET, maxTicket: MAX_TICKET, total: TOTAL, maxInvestments: MAX_INVESTMENTS, settlementYear: SETTLEMENT_YEAR, endOnInvestmentLimit: true };
 export const projectYear = (project: Project) => project.decisionYear ?? project.foundedYear ?? project.firstFundingYear ?? project.year;
 export const chronologicalProjects = (projects: Project[]) => [...projects].sort((a, b) => projectYear(a) - projectYear(b) || a.id.localeCompare(b.id, "en"));
+export function nextProjectId(ids: string[], decisions: Decision[]) {
+  const seen = new Set(decisions.map(d => d.projectId));
+  return ids.find(id => !seen.has(id));
+}
 export const ERA_EVENTS = [
-  { title: "机器开始看见世界", text: "2006—2015 · 机器视觉与移动供应链成熟。能交付、能维护的产品，开始走出实验室。", shock: "客户更愿意为可验证的效率付费。" },
+  { title: "机器开始看见世界", text: "2015 · 机器视觉与移动供应链成熟。能交付、能维护的产品，开始走出实验室。", shock: "客户更愿意为可验证的效率付费。" },
   { title: "资本加速，交付追赶", text: "2016—2020 · 深度学习走向产业。资本愿意给远景定价，真实客户开始检验交付能力。", shock: "规模扩张放大了产品可靠性与现金消耗的差异。" },
   { title: "具身浪潮，现金为王", text: "2021—2026 · 供应链降本与模型能力提升。融资环境变化，商业化与现场可靠性成为分水岭。", shock: "成本下降带来机会，客户续费决定项目能否熬过周期。" },
 ] as const;

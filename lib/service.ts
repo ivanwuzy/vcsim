@@ -1,6 +1,6 @@
 import { randomInt, randomUUID } from "node:crypto";
 import { PROJECTS } from "../data/projects";
-import { calculateValue, era, generateSnapshot, CONTENT_VERSION, investmentAmount, rankRows, validDeck, rulesFor, projectYear, valuationMultiple } from "./engine";
+import { calculateValue, era, generateSnapshot, CONTENT_VERSION, investmentAmount, rankRows, validDeck, rulesFor, projectYear, valuationMultiple, chronologicalProjects, deckStats, nextProjectId, ERA_EVENTS } from "./engine";
 import { anonymizeText, playerCard } from "./cards";
 import { getDb, transaction, type DB } from "./db";
 import { hash, HttpError, newToken } from "./security";
@@ -35,20 +35,24 @@ export async function ensureSeed() {
           await db.query("UPDATE events SET snapshot=$1 WHERE id=$2", [JSON.stringify(generateSnapshot(bankChanged ? PROJECTS : event.snapshot.projects, newToken())), event.id]);
         }
         if (bankChanged) {
-          // Correct v4.4's mistaken card-year import in played snapshots without
-          // changing their deck order, valuations, paths or recorded decisions.
+          // Repair this workbook's years and timeline while retaining decisions
+          // by project ID. Resuming skips seen projects in the corrected order.
           const played = (await db.query<EventRow>("SELECT * FROM events e WHERE EXISTS (SELECT 1 FROM runs r WHERE r.event_id=e.id) FOR UPDATE")).rows;
           const current = new Map(PROJECTS.map(p => [p.id, p]));
           for (const event of played) {
-            if (event.snapshot.version !== CONTENT_VERSION) continue;
-            let changed = false;
-            const projects = event.snapshot.projects.map(p => {
+            if (![CONTENT_VERSION, "2026.10-workbook-v4.2-confirmed-returns"].includes(event.snapshot.version) || event.snapshot.rules?.total !== PROJECTS.length || event.snapshot.projects.length !== PROJECTS.length) continue;
+            if (event.snapshot.projects.some(p => {
               const corrected = current.get(p.id);
-              if (!corrected || corrected.editorial?.sourceBook !== "具身VC投资模拟器_题库v4.4.xlsx" || p.editorial?.sourceSha256 !== corrected.editorial.sourceSha256 || p.year !== p.valuation.entryYear || p.decisionYear !== p.valuation.entryYear || p.decisionYear === corrected.decisionYear) return p;
-              changed = true;
+              return !corrected || corrected.editorial?.sourceBook !== "具身VC投资模拟器_题库v4.4.xlsx" || p.editorial?.sourceSha256 !== corrected.editorial.sourceSha256;
+            })) continue;
+            const projects = event.snapshot.projects.map(p => {
+              const corrected = current.get(p.id)!;
               return { ...p, year: corrected.year, decisionYear: corrected.decisionYear };
             });
-            if (changed) await db.query("UPDATE events SET snapshot=$1 WHERE id=$2", [JSON.stringify({ ...event.snapshot, projects }), event.id]);
+            const ids = chronologicalProjects(projects).map(p => p.id);
+            if (event.snapshot.decks.some(d => d.ids.length !== ids.length || new Set(d.ids).size !== ids.length || d.ids.some(id => !ids.includes(id)))) continue;
+            const decks = event.snapshot.decks.map(d => ({ ...d, ids, ...deckStats(ids, event.snapshot.paths) }));
+            await db.query("UPDATE events SET snapshot=$1 WHERE id=$2", [JSON.stringify({ ...event.snapshot, version: CONTENT_VERSION, projects, decks, events: ERA_EVENTS.map(e => ({ ...e })) }), event.id]);
           }
         }
         return;
@@ -152,8 +156,9 @@ export async function startRun(eventId: string, token?: string): Promise<RunView
 function view(run: RunRow, event: EventRow, player: PlayerRow): RunView {
   const ids = event.snapshot.decks.find(d => d.id === run.deck_id)!.ids;
   const rules = rulesFor(event.snapshot);
-  const index = run.decisions.length, project = run.status === "playing" && index < rules.total ? event.snapshot.projects.find(p => p.id === ids[index])! : null;
-  const previous = index ? event.snapshot.projects.find(p => p.id === ids[index - 1])! : null;
+  const index = run.decisions.length, nextId = nextProjectId(ids, run.decisions);
+  const project = run.status === "playing" && index < rules.total ? event.snapshot.projects.find(p => p.id === nextId)! : null;
+  const previous = index ? event.snapshot.projects.find(p => p.id === run.decisions[index - 1].projectId)! : null;
   const year = project ? projectYear(project) : rules.settlementYear, value = calculateValue(run.decisions, event.snapshot, year);
   const card = project ? playerCard(project) : null;
   const updates = run.decisions.filter(d => d.choice === "invest").flatMap(d => {
@@ -188,7 +193,7 @@ export async function decide(id: string, token: string | undefined, decision: De
     if (event.status !== "open") throw new HttpError(409, "活动已停止，进度已保存。请等待恢复或进入当前活动。");
     if (run.status === "completed") throw new HttpError(409, "正式游戏已完成。");
     const deck = event.snapshot.decks.find(d => d.id === run.deck_id)!;
-    if (deck.ids[run.decisions.length] !== decision.projectId) throw new HttpError(409, "项目顺序不匹配，请恢复当前进度。");
+    if (nextProjectId(deck.ids, run.decisions) !== decision.projectId) throw new HttpError(409, "项目顺序不匹配，请恢复当前进度。");
     const invested = run.decisions.filter(d => d.choice === "invest").length;
     if (decision.choice === "invest" && invested >= rulesFor(event.snapshot).maxInvestments) throw new HttpError(409, `已达到${rulesFor(event.snapshot).maxInvestments}家投资上限，剩余项目只能跳过。`);
     const spent = run.decisions.reduce((sum, d) => sum + investmentAmount(d, rules), 0);

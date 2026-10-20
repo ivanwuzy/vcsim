@@ -52,7 +52,8 @@ def build_projects(book):
         for label, value in [('card entry year', year), ('valuation entry year', valuation_year)]:
             if not isinstance(value, (int, float)) or not math.isfinite(value) or value != int(value) or not 2006 <= value <= 2026:
                 raise ValueError(f'{name}: invalid {label} {value}')
-        year, valuation_year = int(year), int(valuation_year)
+        source_year, valuation_year = int(year), int(valuation_year)
+        year = max(2015, source_year)
         unit, entry, terminal, specified, retention, cached = (returns.get(f'{c}{cr}') for c in ['F', 'G', 'H', 'I', 'J', 'K'])
         currency = {'亿元人民币': 'CNY', '亿美元': 'USD', '指数': 'index'}.get(unit)
         if currency is None: raise ValueError(f'{name}: unknown valuation unit {unit}')
@@ -84,7 +85,7 @@ def build_projects(book):
             match = re.search(r'/(20\d{2})/(\d{2})/(\d{2})/', url) or re.search(r'/(20\d{2})-(\d{2})-(\d{2})/', url)
             return '-'.join(match.groups()) if match else None
         cutoff = returns.get(f'P{cr}') or '待补'; cutoff_year = re.search(r'20\d{2}', str(cutoff))
-        note = (f'卡片进入年采用题库底稿F{r}，为{year}；回报按人工确认的回报测算表{cr}行结算，测算进入年为{valuation_year}，回报倍率为{multiple:.4f}倍。'
+        note = (f'卡片进入年采用题库底稿F{r}（原值{source_year}），按游戏规则不早于2015年，展示为{year}；回报按人工确认的回报测算表{cr}行结算，测算进入年为{valuation_year}，回报倍率为{multiple:.4f}倍。'
                 f'持股保留系数为{retention:.0%}，不计追加投入、分红、优先权、税费与退出折价。'
                 f'原研究口径（人工确认前）：{returns.get(f"E{cr}", "")}。'
                 f'原估值依据：{returns.get(f"Q{cr}", "")}。原不确定性：{returns.get(f"R{cr}", "")}')
@@ -121,7 +122,7 @@ def build_projects(book):
     if len({p['id'] for p in projects}) != 50: raise ValueError('Duplicate case IDs')
     manifest = {
         'version': version, 'sourceBook': str(book.relative_to(ROOT)) if book.is_relative_to(ROOT) else book.name,
-        'sourceSha256': sha, 'count': 50, 'realCases': 50, 'manualCases': 50, 'overseasCases': 0,
+        'sourceSha256': sha, 'count': 50, 'realCases': 50, 'manualCases': 50, 'overseasCases': 0, 'minimumGameYear': 2015,
         'years': {p['name']: p['decisionYear'] for p in projects},
         'valuationYears': {p['name']: p['valuation']['entryYear'] for p in projects},
         'returns': {name: returns[f'K{cr}'] for name, cr in return_rows.items()},

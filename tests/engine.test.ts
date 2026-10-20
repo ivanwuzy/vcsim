@@ -10,12 +10,13 @@ const deck = snapshot.decks[0];
 const decisions = (count: number): Decision[] => deck.ids.map((id, i) => ({ projectId: id, choice: i < count ? "invest" : "pass", key: id }));
 describe("domestic historical content and sequential fund rules", () => {
   it("uses the card manuscript years rather than return-calculation years for the timeline and player cards", () => {
-    const expected = { "优必选": 2014, "大疆创新": 2015, "群核科技": 2014, "石头科技": 2015, "强脑科技": 2015, "Momenta": 2016, "VAST": 2023, "奥比中光": 2017, "柔宇科技": 2016 };
+    const expected = { "优必选": 2015, "大疆创新": 2015, "群核科技": 2015, "云迹机器人": 2015, "石头科技": 2015, "强脑科技": 2015, "Momenta": 2016, "VAST": 2023, "奥比中光": 2017, "柔宇科技": 2016 };
     for (const [name, year] of Object.entries(expected)) {
       const project = PROJECTS.find(p => p.name === name)!;
       expect(projectYear(project), name).toBe(year);
       expect(playerCard(project).year, name).toBe(year);
     }
+    expect(PROJECTS.every(p => projectYear(p) >= 2015)).toBe(true);
   });
   it("has the 50 confirmed domestic v4.4 cases and six confirmed loss recoveries", () => {
     expect(PROJECTS).toHaveLength(50); expect(PROJECTS.every(p => p.real)).toBe(true);

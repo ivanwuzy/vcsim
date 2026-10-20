@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { adminAction, adminState, decide, ensureSeed, getActiveEvent, getEvent, getRun, leaderboard, publicLeaderboard, publicMeta, register, result, startRun } from "../lib/service";
 import { getDb } from "../lib/db";
 import { PROJECTS } from "../data/projects";
-import { generateSnapshot } from "../lib/engine";
+import { generateSnapshot, chronologicalProjects, validDeck } from "../lib/engine";
 let eventId: string;
 beforeAll(async () => {
   process.env.PGLITE_PATH = await mkdtemp(`${tmpdir()}/vc-test-`);
@@ -278,11 +278,12 @@ describe("persistent event lifecycle", () => {
     expect((await adminState()).events).toHaveLength(1);
   });
 
-  it("repairs played v4.4 card years while preserving decisions, deck order, valuations and completed scores", async () => {
+  it("sorts played v4.4 timelines and resumes unseen cards while preserving decisions, valuations and completed scores", async () => {
     const created = await adminAction(undefined, "create", { title: "修正卡片年份", mode: "demo" }) as { eventId: string };
     await adminAction(created.eventId, "import", { projects: PROJECTS });
     await adminAction(created.eventId, "open", {});
     const legacy = generateSnapshot(PROJECTS.map(p => ({ ...p, year: p.valuation.entryYear, decisionYear: p.valuation.entryYear })), "old-years");
+    legacy.version = "2026.10-workbook-v4.2-confirmed-returns";
     const db = await getDb();
     await db.query("UPDATE events SET snapshot=$1 WHERE id=$2", [JSON.stringify(legacy), created.eventId]);
     const playing = await register(created.eventId, "进行中年份修正", "基金");
@@ -297,7 +298,8 @@ describe("persistent event lifecycle", () => {
     (globalThis as typeof globalThis & { vcSeed?: Promise<void> }).vcSeed = undefined;
     await ensureSeed();
     const fixed = await getEvent(created.eventId);
-    expect(fixed.snapshot.decks).toEqual(legacy.decks);
+    expect(validDeck(fixed.snapshot.decks[0].ids, fixed.snapshot.projects)).toBe(true);
+    expect(fixed.snapshot.decks[0].ids).toEqual(chronologicalProjects(PROJECTS).map(p => p.id));
     expect(fixed.snapshot.paths).toEqual(legacy.paths);
     for (const p of fixed.snapshot.projects) {
       expect(p.year).toBe(PROJECTS.find(x => x.id === p.id)!.year);
@@ -306,10 +308,20 @@ describe("persistent event lifecycle", () => {
     expect((await db.query("SELECT * FROM runs WHERE event_id=$1 ORDER BY id", [created.eventId])).rows).toEqual(records);
     expect(await leaderboard(fixed)).toEqual(ranks);
     const resumed = await getRun(run.id, playing.token);
-    expect(resumed.index).toBe(run.index); expect(resumed.card!.id).toBe(run.card!.id);
+    const seen = new Set((records.find(r => r.id === run.id)!.decisions as { projectId: string }[]).map(d => d.projectId));
+    expect(resumed.index).toBe(run.index);
+    expect(resumed.card!.id).toBe(fixed.snapshot.decks[0].ids.find(id => !seen.has(id)));
     expect(resumed.year).toBe(PROJECTS.find(p => p.id === resumed.card!.id)!.year);
     expect(resumed.card!.year).toBe(resumed.year); expect(resumed.cash).toBe(run.cash);
-    expect((await decide(resumed.id, playing.token, { projectId: resumed.card!.id, choice: "pass", key: randomUUID() })).index).toBe(resumed.index + 1);
+    await expect(decide(resumed.id, playing.token, { projectId: run.card!.id, choice: "pass", key: randomUUID() })).rejects.toThrow("顺序");
+    let next = resumed, lastYear = 2015;
+    while (next.status === "playing") {
+      expect(next.year).toBeGreaterThanOrEqual(lastYear); lastYear = next.year;
+      expect(seen.has(next.card!.id)).toBe(false); seen.add(next.card!.id);
+      next = await decide(next.id, playing.token, { projectId: next.card!.id, choice: "pass", key: randomUUID() });
+    }
+    expect(seen.size).toBe(50); expect(next.index).toBe(50);
+    expect(next.value).toBe(200_000_000);
     expect((await result(done.id, completed.token)).profit).toBe(done.value - 200_000_000);
     const snapshot = structuredClone(fixed.snapshot);
     for (const p of snapshot.projects) { p.year = p.decisionYear = p.valuation.entryYear; p.editorial!.sourceSha256 = "another-workbook"; }

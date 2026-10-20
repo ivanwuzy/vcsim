@@ -44,11 +44,13 @@ export default function Game() {
     setAmount(next); localStorage.setItem(`amount:${run.id}`, String(next));
   }
   const loadedEventId = useRef<string | null>(null);
+  const loadedContentVersion = useRef<string | undefined>(undefined);
   async function load() {
     setLoading(true); setError("");
     try {
       const session = await api<{ meta: Meta | null; player: { name: string; institution: string } | null; run: RunView | null }>("/api/session");
       setMeta(session.meta); loadedEventId.current = session.meta?.id ?? null;
+      loadedContentVersion.current = session.meta?.contentVersion;
       restoreAmount(session.run?.id, session.meta);
       setRun(session.run); setResult(null); setPending(null); setTutorial(false); setRules(false); setExpanded(null); setShowReviews(false); setShowRecovery(false); setRecovery(""); setDx(0); drag.current = null;
       setRegistered(!!session.player);
@@ -65,7 +67,7 @@ export default function Game() {
     return pollVisible(async () => {
       if (busy || loading) return;
       const current = await api<Meta | null>("/api/meta");
-      if ((current?.id ?? null) !== loadedEventId.current) await load();
+      if ((current?.id ?? null) !== loadedEventId.current || current?.contentVersion !== loadedContentVersion.current) await load();
       else if (current) setMeta(previous => previous?.id === current.id ? { ...previous, replayEnabled: current.replayEnabled } : previous);
     }, 5000, false);
   }, [busy, loading]); // eslint-disable-line react-hooks/exhaustive-deps
