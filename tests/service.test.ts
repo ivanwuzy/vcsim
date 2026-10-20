@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { adminAction, adminState, decide, ensureSeed, getActiveEvent, getEvent, getRun, leaderboard, publicLeaderboard, publicMeta, register, result, startRun } from "../lib/service";
 import { getDb } from "../lib/db";
+import { PROJECTS } from "../data/projects";
+import { generateSnapshot } from "../lib/engine";
 let eventId: string;
 beforeAll(async () => {
   process.env.PGLITE_PATH = await mkdtemp(`${tmpdir()}/vc-test-`);
@@ -274,6 +276,48 @@ describe("persistent event lifecycle", () => {
     await expect(ensureSeed()).rejects.toThrow("旧版初始化失败");
     await ensureSeed();
     expect((await adminState()).events).toHaveLength(1);
+  });
+
+  it("repairs played v4.4 card years while preserving decisions, deck order, valuations and completed scores", async () => {
+    const created = await adminAction(undefined, "create", { title: "修正卡片年份", mode: "demo" }) as { eventId: string };
+    await adminAction(created.eventId, "import", { projects: PROJECTS });
+    await adminAction(created.eventId, "open", {});
+    const legacy = generateSnapshot(PROJECTS.map(p => ({ ...p, year: p.valuation.entryYear, decisionYear: p.valuation.entryYear })), "old-years");
+    const db = await getDb();
+    await db.query("UPDATE events SET snapshot=$1 WHERE id=$2", [JSON.stringify(legacy), created.eventId]);
+    const playing = await register(created.eventId, "进行中年份修正", "基金");
+    let run = await startRun(created.eventId, playing.token);
+    for (let i = 0; i < 2; i++) run = await decide(run.id, playing.token, { projectId: run.card!.id, choice: "pass", key: randomUUID() });
+    const completed = await register(created.eventId, "已完成年份修正", "基金");
+    let done = await startRun(created.eventId, completed.token);
+    for (let i = 0; i < 20; i++) done = await decide(done.id, completed.token, { projectId: done.card!.id, choice: "invest", key: randomUUID() });
+    const records = (await db.query("SELECT * FROM runs WHERE event_id=$1 ORDER BY id", [created.eventId])).rows;
+    const ranks = await leaderboard(await getEvent(created.eventId));
+    await db.query("UPDATE game_settings SET content_version='old-v4.4-years' WHERE id=1");
+    (globalThis as typeof globalThis & { vcSeed?: Promise<void> }).vcSeed = undefined;
+    await ensureSeed();
+    const fixed = await getEvent(created.eventId);
+    expect(fixed.snapshot.decks).toEqual(legacy.decks);
+    expect(fixed.snapshot.paths).toEqual(legacy.paths);
+    for (const p of fixed.snapshot.projects) {
+      expect(p.year).toBe(PROJECTS.find(x => x.id === p.id)!.year);
+      expect(p.valuation).toEqual(legacy.projects.find(x => x.id === p.id)!.valuation);
+    }
+    expect((await db.query("SELECT * FROM runs WHERE event_id=$1 ORDER BY id", [created.eventId])).rows).toEqual(records);
+    expect(await leaderboard(fixed)).toEqual(ranks);
+    const resumed = await getRun(run.id, playing.token);
+    expect(resumed.index).toBe(run.index); expect(resumed.card!.id).toBe(run.card!.id);
+    expect(resumed.year).toBe(PROJECTS.find(p => p.id === resumed.card!.id)!.year);
+    expect(resumed.card!.year).toBe(resumed.year); expect(resumed.cash).toBe(run.cash);
+    expect((await decide(resumed.id, playing.token, { projectId: resumed.card!.id, choice: "pass", key: randomUUID() })).index).toBe(resumed.index + 1);
+    expect((await result(done.id, completed.token)).profit).toBe(done.value - 200_000_000);
+    const snapshot = structuredClone(fixed.snapshot);
+    for (const p of snapshot.projects) { p.year = p.decisionYear = p.valuation.entryYear; p.editorial!.sourceSha256 = "another-workbook"; }
+    await db.query("UPDATE events SET snapshot=$1 WHERE id=$2", [JSON.stringify(snapshot), created.eventId]);
+    await db.query("UPDATE game_settings SET content_version='another-version' WHERE id=1");
+    (globalThis as typeof globalThis & { vcSeed?: Promise<void> }).vcSeed = undefined;
+    await ensureSeed();
+    expect((await getEvent(created.eventId)).snapshot).toEqual(snapshot);
   });
 
 });

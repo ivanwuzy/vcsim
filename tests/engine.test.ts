@@ -9,6 +9,14 @@ const snapshot = generateSnapshot(PROJECTS, "test-world");
 const deck = snapshot.decks[0];
 const decisions = (count: number): Decision[] => deck.ids.map((id, i) => ({ projectId: id, choice: i < count ? "invest" : "pass", key: id }));
 describe("domestic historical content and sequential fund rules", () => {
+  it("uses the card manuscript years rather than return-calculation years for the timeline and player cards", () => {
+    const expected = { "优必选": 2014, "大疆创新": 2015, "群核科技": 2014, "石头科技": 2015, "强脑科技": 2015, "Momenta": 2016, "VAST": 2023, "奥比中光": 2017, "柔宇科技": 2016 };
+    for (const [name, year] of Object.entries(expected)) {
+      const project = PROJECTS.find(p => p.name === name)!;
+      expect(projectYear(project), name).toBe(year);
+      expect(playerCard(project).year, name).toBe(year);
+    }
+  });
   it("has the 50 confirmed domestic v4.4 cases and six confirmed loss recoveries", () => {
     expect(PROJECTS).toHaveLength(50); expect(PROJECTS.every(p => p.real)).toBe(true);
     expect(PROJECTS.filter(p => p.market === "overseas")).toHaveLength(0);
@@ -24,7 +32,7 @@ describe("domestic historical content and sequential fund rules", () => {
     for (const p of PROJECTS) {
       expect(p.year).toBe(years[p.name]);
       expect(p.decisionYear).toBe(years[p.name]);
-      expect(p.valuation.entryYear).toBe(years[p.name]);
+      expect(p.valuation.entryYear).toBe((manifest.valuationYears as Record<string, number>)[p.name]);
       expect(valuationMultiple(p.valuation)).toBeCloseTo(returns[p.name], 8);
       expect(snapshot.paths[p.id].multipleBps).toBe(Math.round(returns[p.name] * 10000));
       expect(p.editorial?.sourceSha256).toBe(manifest.sourceSha256);
@@ -33,7 +41,7 @@ describe("domestic historical content and sequential fund rules", () => {
         .toBe(Math.round(amount * Math.round(returns[p.name] * 10000) / 10000) - amount);
     }
     expect(chronologicalProjects(PROJECTS).at(-1)?.name).toBe("德塔智能");
-    expect(chronologicalProjects(PROJECTS).find(p => p.name === "柔宇科技")?.year).toBe(2013);
+    expect(chronologicalProjects(PROJECTS).find(p => p.name === "柔宇科技")?.year).toBe(2016);
   });
   it("does not count later history as evidence available at entry time", () => {
     const p = { ...PROJECTS[0], review: "approved" as const, reviewedAt: "2026-10-13", decisionEvidence: PROJECTS[0].sources[0].url, sources: [{ ...PROJECTS[0].sources[0], publishedAt: `${PROJECTS[0].year + 1}-01-01` }] };

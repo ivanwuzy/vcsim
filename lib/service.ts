@@ -34,6 +34,23 @@ export async function ensureSeed() {
           if ((!bankChanged && event.snapshot.version === CONTENT_VERSION) || event.snapshot.projects.length !== PROJECTS.length || new Set(event.snapshot.projects.map(p => p.id)).size !== PROJECTS.length) continue;
           await db.query("UPDATE events SET snapshot=$1 WHERE id=$2", [JSON.stringify(generateSnapshot(bankChanged ? PROJECTS : event.snapshot.projects, newToken())), event.id]);
         }
+        if (bankChanged) {
+          // Correct v4.4's mistaken card-year import in played snapshots without
+          // changing their deck order, valuations, paths or recorded decisions.
+          const played = (await db.query<EventRow>("SELECT * FROM events e WHERE EXISTS (SELECT 1 FROM runs r WHERE r.event_id=e.id) FOR UPDATE")).rows;
+          const current = new Map(PROJECTS.map(p => [p.id, p]));
+          for (const event of played) {
+            if (event.snapshot.version !== CONTENT_VERSION) continue;
+            let changed = false;
+            const projects = event.snapshot.projects.map(p => {
+              const corrected = current.get(p.id);
+              if (!corrected || corrected.editorial?.sourceBook !== "具身VC投资模拟器_题库v4.4.xlsx" || p.editorial?.sourceSha256 !== corrected.editorial.sourceSha256 || p.year !== p.valuation.entryYear || p.decisionYear !== p.valuation.entryYear || p.decisionYear === corrected.decisionYear) return p;
+              changed = true;
+              return { ...p, year: corrected.year, decisionYear: corrected.decisionYear };
+            });
+            if (changed) await db.query("UPDATE events SET snapshot=$1 WHERE id=$2", [JSON.stringify({ ...event.snapshot, projects }), event.id]);
+          }
+        }
         return;
       }
       const legacy = (await db.query<EventRow>("SELECT * FROM events ORDER BY created_at DESC,id DESC LIMIT 1 FOR UPDATE")).rows[0];

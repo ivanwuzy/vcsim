@@ -40,7 +40,7 @@ def build_projects(book):
     version = version_match[0] if version_match else 'v4'
     sheets = read_sheets(book)
     main, _ = sheets['题库底稿']; returns, formulas = sheets['回报测算']; sources, _ = sheets['资料口径']
-    if sources.get('E7') != '进入估值及逻辑': raise ValueError('Expected v4 workbook layout; older importer is preserved in Git history.')
+    if sources.get('E7') != '进入估值及逻辑' or main.get('F1') != '游戏进入年份': raise ValueError('Expected v4 workbook layout; older importer is preserved in Git history.')
     main_rows = rows_by_name(main, 'A', 2); return_rows = rows_by_name(returns, 'B', 7); source_rows = rows_by_name(sources, 'B', 8)
     if len(return_rows) != 50 or main_rows.keys() != return_rows.keys() or source_rows.keys() != return_rows.keys():
         raise ValueError('All three sheets must contain the same 50 unique companies.')
@@ -48,10 +48,11 @@ def build_projects(book):
     for name, cr in return_rows.items():
         r, sr = main_rows[name], source_rows[name]; case_id = returns[f'A{cr}']
         if case_id != sources[f'A{sr}']: raise ValueError(f'{name}: conflicting case IDs')
-        year = returns.get(f'C{cr}')
-        if not isinstance(year, (int, float)) or not math.isfinite(year) or year != int(year) or not 2000 <= year <= 2026:
-            raise ValueError(f'{name}: invalid game entry year {year}')
-        year = int(year)
+        year, valuation_year = main.get(f'F{r}'), returns.get(f'C{cr}')
+        for label, value in [('card entry year', year), ('valuation entry year', valuation_year)]:
+            if not isinstance(value, (int, float)) or not math.isfinite(value) or value != int(value) or not 2006 <= value <= 2026:
+                raise ValueError(f'{name}: invalid {label} {value}')
+        year, valuation_year = int(year), int(valuation_year)
         unit, entry, terminal, specified, retention, cached = (returns.get(f'{c}{cr}') for c in ['F', 'G', 'H', 'I', 'J', 'K'])
         currency = {'亿元人民币': 'CNY', '亿美元': 'USD', '指数': 'index'}.get(unit)
         if currency is None: raise ValueError(f'{name}: unknown valuation unit {unit}')
@@ -83,7 +84,7 @@ def build_projects(book):
             match = re.search(r'/(20\d{2})/(\d{2})/(\d{2})/', url) or re.search(r'/(20\d{2})-(\d{2})-(\d{2})/', url)
             return '-'.join(match.groups()) if match else None
         cutoff = returns.get(f'P{cr}') or '待补'; cutoff_year = re.search(r'20\d{2}', str(cutoff))
-        note = (f'按用户最新人工确认的回报测算表{cr}行结算，游戏进入年为{year}，回报倍率为{multiple:.4f}倍。'
+        note = (f'卡片进入年采用题库底稿F{r}，为{year}；回报按人工确认的回报测算表{cr}行结算，测算进入年为{valuation_year}，回报倍率为{multiple:.4f}倍。'
                 f'持股保留系数为{retention:.0%}，不计追加投入、分红、优先权、税费与退出折价。'
                 f'原研究口径（人工确认前）：{returns.get(f"E{cr}", "")}。'
                 f'原估值依据：{returns.get(f"Q{cr}", "")}。原不确定性：{returns.get(f"R{cr}", "")}')
@@ -104,12 +105,12 @@ def build_projects(book):
                 'stage': '人工确认结算', 'informationBoundary': sources[f'H{sr}'],
             },
             'valuation': {
-                'method': 'manual', 'basis': basis, 'currency': currency, 'entryYear': year,
+                'method': 'manual', 'basis': basis, 'currency': currency, 'entryYear': valuation_year,
                 'endYear': int(cutoff_year[0]) if cutoff_year else 2026,
                 'entryYuan': entry_value if currency == 'CNY' else None, 'terminalYuan': terminal_value if currency == 'CNY' else None,
                 'entryValue': entry_value, 'terminalValue': terminal_value, 'retention': retention,
                 'entryRound': returns[f'D{cr}'], 'cutoff': cutoff, 'points': [],
-                'reference': f'{book.name}：回报测算第{cr}行（C列游戏进入年、I列人工倍率优先、K列结算倍数）；题库底稿第{r}行；资料口径第{sr}行',
+                'reference': f'{book.name}：题库底稿第{r}行F列卡片进入年；回报测算第{cr}行（C列测算进入年、I列人工倍率优先、K列结算倍数）；资料口径第{sr}行',
                 'status': '人工确认结算', 'note': note,
             },
         }
@@ -122,6 +123,7 @@ def build_projects(book):
         'version': version, 'sourceBook': str(book.relative_to(ROOT)) if book.is_relative_to(ROOT) else book.name,
         'sourceSha256': sha, 'count': 50, 'realCases': 50, 'manualCases': 50, 'overseasCases': 0,
         'years': {p['name']: p['decisionYear'] for p in projects},
+        'valuationYears': {p['name']: p['valuation']['entryYear'] for p in projects},
         'returns': {name: returns[f'K{cr}'] for name, cr in return_rows.items()},
     }
     return projects, manifest
@@ -138,4 +140,4 @@ if __name__ == '__main__':
     (ROOT / 'data/projects.ts').write_text(f'import type {{ Project }} from "../lib/types";\n\n// Generated from the confirmed {manifest["version"]} workbook by scripts/import-question-bank.py.\nexport const PROJECTS: Project[] = ' + text + ';\n')
     (ROOT / 'docs/题库初稿.json').write_text(text + '\n')
     (ROOT / 'data/question-bank-manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
-    print(json.dumps({k: v for k, v in manifest.items() if k not in ['returns', 'years']}, ensure_ascii=False))
+    print(json.dumps({k: v for k, v in manifest.items() if k not in ['returns', 'years', 'valuationYears']}, ensure_ascii=False))
