@@ -79,7 +79,7 @@ test("the host console opens a protected independent screen", async ({ page }) =
   await popup.close();
 });
 
-test("the podium fits projector viewports, rotates the remaining board and previews all three medals", async ({ page }) => {
+test("the podium fits projector viewports, keeps ranks 4–10 fixed and previews all three medals", async ({ page }) => {
   await page.clock.install(); await page.setViewportSize({ width: 1920, height: 1080 });
   await screen(page, () => board());
   await expect(page.getByTestId("medal-celebration")).toHaveCount(0);
@@ -109,7 +109,9 @@ test("the podium fits projector viewports, rotates the remaining board and previ
   await page.getByRole("button", { name: "退出全屏", exact: true }).click();
   await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(false);
   await page.clock.runFor(12100);
-  await expect(page.locator(".contenders-list")).toContainText("合伙人 11");
+  await expect(page.locator(".contender-rank")).toHaveText(["04", "05", "06", "07", "08", "09", "10"]);
+  await expect(page.locator(".contenders-list")).not.toContainText("合伙人 11");
+  await expect(page.locator(".pagination-dots")).toHaveCount(0);
   for (const rank of [1, 2, 3]) {
     await page.getByRole("button", { name: "动效预览 临时" }).click();
     await page.getByRole("button", { name: rank === 1 ? "金 · 刷新最高纪录" : `${rank === 2 ? "银" : "铜"} · 新晋第${rank}名` }).click();
