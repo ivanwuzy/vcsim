@@ -308,8 +308,10 @@ test("the real API persists screen draws and replacement awards and the host con
   expect(afterClear.players).toEqual(beforeClear.players); expect(afterClear.event).toEqual(beforeClear.event); expect(afterClear.leaderboard).toEqual(beforeClear.leaderboard);
   const stale = await page.request.post(`/api/admin?event=${eventId}`, { headers: { Origin: origin }, data: { action: "draw", key: current.draws[0].request_key, count: 5 } });
   expect(stale.status()).toBe(409);
-  await page.getByRole("button", { name: "抽取5位幸运玩家" }).click();
+  await page.getByRole("button", { name: "抽取2位幸运玩家" }).click();
   await expect(page.getByLabel("抽取人数", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("抽取人数", { exact: true })).toHaveValue("2");
+  await page.getByLabel("抽取人数", { exact: true }).fill("5");
   await expect(page.getByRole("button", { name: "摇杆：开始抽奖" })).toBeEnabled();
   await page.getByRole("button", { name: "摇杆：开始抽奖" }).click();
   await expect(page.getByRole("button", { name: "跳过动画" })).toBeVisible();
