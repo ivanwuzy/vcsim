@@ -8,9 +8,9 @@ import { createReadCache } from "./read-cache";
 import type { Decision, Project, RunView, Snapshot } from "./types";
 import { luckyCandidates, type LuckyDraw, type LotteryState } from "./lottery";
 
-export type EventRow = { id: string; title: string; status: string; mode: string; snapshot: Snapshot; settings: { topCount: number; luckyCount: number }; frozen_rows: LeaderRow[] | null };
+export type EventRow = { id: string; title: string; status: string; mode: string; snapshot: Snapshot; settings: { topCount: number; luckyCount: number; excludeTopN?: number; topM?: number }; frozen_rows: LeaderRow[] | null };
 export type PlayerRow = { id: string; event_id: string; name: string; institution: string; identity_key: string; token_hash: string; recovery_hash: string | null };
-export type RunRow = { id: string; player_id: string; event_id: string; deck_id: string; decisions: Decision[]; status: "playing" | "completed"; profit: string | number | null; completed_at: string | null };
+export type RunRow = { id: string; player_id: string; event_id: string; deck_id: string; decisions: Decision[]; status: "playing" | "completed"; profit: string | number | null; completed_at: string | null; score_source?: string };
 export type LeaderRow = { playerId: string; name: string; institution: string; profit: number; rank: number };
 const globalService = globalThis as typeof globalThis & { vcSeed?: Promise<void>; vcSeedVersion?: string };
 // Rule upgrades must not overwrite an unchanged bank or an administrator's imported cards.
@@ -167,7 +167,7 @@ function view(run: RunRow, event: EventRow, player: PlayerRow): RunView {
   });
   const currentEra = project ? event.snapshot.events[era(year)] : null;
   const eraNotice = currentEra && (!previous || era(year) !== era(projectYear(previous))) ? { title: currentEra.title, text: currentEra.shock } : null;
-  return { id: run.id, player: { name: player.name, institution: player.institution }, status: run.status, index, total: rules.total, year, value: value.value, cash: value.cash, invested: run.decisions.filter(d => d.choice === "invest").length, maxInvestments: rules.maxInvestments, card, eventStatus: event.status, eraNotice, updates };
+  return { id: run.id, player: { name: player.name, institution: player.institution }, status: run.status, index, total: rules.total, year, value: run.status === "completed" ? rules.initial + Number(run.profit) : value.value, cash: value.cash, invested: run.decisions.filter(d => d.choice === "invest").length, maxInvestments: rules.maxInvestments, card, eventStatus: event.status, eraNotice, updates };
 }
 export async function ownedRun(id: string, token?: string, db?: DB, lock = false) {
   db ??= await getDb(); const player = await playerForToken(token, db);
@@ -222,7 +222,7 @@ export async function result(id: string, token?: string) {
   });
   const best = (items: typeof reviews) => [...items].sort((a, b) => b.profit - a.profit)[0] ?? null;
   const unspent = rules.initial - run.decisions.reduce((sum, d) => sum + investmentAmount(d, rules), 0);
-  return { ...calculateValue(run.decisions, event.snapshot), initial: rules.initial, seen: run.decisions.length, unseen: rules.total - run.decisions.length, completionReason: unspent === 0 ? "principal-exhausted" as const : run.decisions.length < rules.total ? "investment-limit" as const : "timeline-end" as const, invested: run.decisions.filter(d => d.choice === "invest").length, unspent, player: { name: player.name, institution: player.institution }, rank: rows.find(r => r.playerId === player.id)?.rank ?? null, participants: rows.length, reviews,
+  return { ...calculateValue(run.decisions, event.snapshot), value: rules.initial + Number(run.profit), profit: Number(run.profit), multiple: (rules.initial + Number(run.profit)) / rules.initial, initial: rules.initial, seen: run.decisions.length, unseen: rules.total - run.decisions.length, completionReason: unspent === 0 ? "principal-exhausted" as const : run.decisions.length < rules.total ? "investment-limit" as const : "timeline-end" as const, invested: run.decisions.filter(d => d.choice === "invest").length, unspent, player: { name: player.name, institution: player.institution }, rank: rows.find(r => r.playerId === player.id)?.rank ?? null, participants: rows.length, reviews,
     highlights: { best: best(reviews.filter(r => r.choice === "invest" && r.profit > 0)), missed: best(reviews.filter(r => r.choice === "pass" && r.profit > 0)), avoided: [...reviews].filter(r => r.choice === "pass" && r.profit < 0).sort((a, b) => a.profit - b.profit)[0] ?? null }, frozen: event.status === "frozen" };
 }
 export function contentIssues(projects: Project[]) {
@@ -247,7 +247,7 @@ export async function adminState(eventId?: string) {
   const publicUrl = process.env.PUBLIC_URL || "http://localhost:3000";
   const replay = { replayEnabled: await replayEnabled(db) };
   if (!event) return { event: null, events, activeEventId, players: [], draws: [], audits: [], leaderboard: [], issues: [], publicUrl, ...replay };
-  const players = (await db.query<{ id: string; name: string; institution: string; status: string | null; progress: number; profit: string | null }>(`SELECT p.id,p.name,p.institution,r.status,COALESCE(jsonb_array_length(r.decisions),0) AS progress,r.profit FROM players p LEFT JOIN runs r ON r.player_id=p.id WHERE p.event_id=$1 ORDER BY p.created_at`, [event.id])).rows;
+  const players = (await db.query<{ id: string; name: string; institution: string; is_test: boolean; score_source: string | null; status: string | null; progress: number; profit: string | null }>(`SELECT p.id,p.name,p.institution,p.is_test,r.score_source,r.status,COALESCE(jsonb_array_length(r.decisions),0) AS progress,r.profit FROM players p LEFT JOIN runs r ON r.player_id=p.id WHERE p.event_id=$1 ORDER BY p.created_at,p.id`, [event.id])).rows;
   const draws = (await db.query("SELECT id,kind,candidates,winners,created_at FROM draws WHERE event_id=$1 AND kind IN ('lucky','tie') ORDER BY created_at", [event.id])).rows;
   const audits = (await db.query("SELECT action,detail,created_at FROM audit_log WHERE event_id=$1 OR event_id IS NULL ORDER BY created_at DESC LIMIT 30", [event.id])).rows;
   return { event, events, activeEventId, players, draws, audits, leaderboard: await leaderboard(event), issues: contentIssues(event.snapshot.projects), publicUrl, ...replay };
@@ -261,8 +261,9 @@ export async function lotteryState(eventId: string): Promise<LotteryState> {
     const candidates = event.frozen_rows ?? [];
     // Use corrected names from the locked roster when displaying saved awards.
     const names = new Map(candidates.map(player => [player.playerId, player]));
-    return { eventId: event.id, title: event.title, locked: event.status === "frozen", defaultCount: event.settings.luckyCount, candidates,
-      draws: draws.map(draw => ({ ...draw, candidates: draw.candidates.map(player => names.get(player.playerId) ?? player), winners: draw.winners.map(player => names.get(player.playerId) ?? player) })) };
+    const correctedName = (player: LeaderRow) => { const current = names.get(player.playerId); return current ? { ...player, name: current.name, institution: current.institution } : player; };
+    return { eventId: event.id, title: event.title, locked: event.status === "frozen", defaultCount: event.settings.luckyCount, excludeTopN: event.settings.excludeTopN ?? 0, topM: event.settings.topM ?? 0, candidates,
+      draws: draws.map(draw => ({ ...draw, candidates: draw.candidates.map(correctedName), winners: draw.winners.map(correctedName) })) };
   });
 }
 export async function adminAction(eventId: string | undefined, action: string, payload: Record<string, unknown>) {
@@ -283,6 +284,64 @@ export async function adminAction(eventId: string | undefined, action: string, p
       await audit(db, id, action, { mode }); return { eventId: id };
     }
     const event = await getEvent(eventId, db, true);
+    if (action === "add-test-players" || action === "fill-score" || action === "delete-test-players") {
+      const initial = rulesFor(event.snapshot).initial;
+      let detail: Record<string, unknown>;
+      if (action === "add-test-players") {
+        const count = payload.count;
+        if (typeof count !== "number" || !Number.isInteger(count) || count < 1 || count > 1000) throw new HttpError(422, "测试玩家人数须为1至1000的整数。");
+        const batch = randomUUID().slice(0, 8);
+        const people = Array.from({ length: count }, (_, index) => {
+          const name = `测试玩家${batch}-${String(index + 1).padStart(3, "0")}`, institution = "虚拟测试机构";
+          // Symmetric triangular distribution: 60–140 亿, centered on 100 亿.
+          const aum = (60_000 + randomInt(40_001) + randomInt(40_001)) * 100_000;
+          return { id: randomUUID(), name, institution, identity: identity(name, institution), tokenHash: hash(newToken()), runId: randomUUID(), profit: aum - initial };
+        });
+        await db.query(`INSERT INTO players(id,event_id,name,institution,identity_key,token_hash,is_test)
+          SELECT id,$1,name,institution,identity,"tokenHash",TRUE FROM jsonb_to_recordset($2::jsonb)
+          AS p(id text,name text,institution text,identity text,"tokenHash" text)`, [event.id, JSON.stringify(people)]);
+        await db.query(`INSERT INTO runs(id,player_id,event_id,deck_id,status,profit,completed_at,score_source)
+          SELECT "runId",id,$1,$2,'completed',profit,NOW(),'test' FROM jsonb_to_recordset($3::jsonb)
+          AS r("runId" text,id text,profit bigint)`, [event.id, event.snapshot.decks[0].id, JSON.stringify(people)]);
+        detail = { addedCount: count };
+      } else if (action === "fill-score") {
+        const name = typeof payload.name === "string" ? payload.name.trim() : "", institution = typeof payload.institution === "string" ? payload.institution.trim() : "";
+        if (!name || name.length > 80 || !institution || institution.length > 80) throw new HttpError(422, "请填写80字以内的姓名和机构。");
+        const aum = payload.aum;
+        if (typeof aum !== "number" || !Number.isSafeInteger(aum) || aum < 0) throw new HttpError(422, "AUM须为非负、安全整数金额（元）。");
+        const key = identity(name, institution);
+        const existing = (await db.query<PlayerRow>("SELECT * FROM players WHERE event_id=$1 AND identity_key=$2", [event.id, key])).rows[0];
+        if (payload.playerId && (!existing || existing.id !== payload.playerId)) throw new HttpError(409, "玩家姓名或机构已变化，请刷新后重新补填。");
+        const id = existing?.id ?? randomUUID();
+        if (!existing) await db.query("INSERT INTO players(id,event_id,name,institution,identity_key,token_hash) VALUES($1,$2,$3,$4,$5,$6)", [id, event.id, name, institution, key, hash(newToken())]);
+        const previous = (await db.query<RunRow>("SELECT * FROM runs WHERE player_id=$1", [id])).rows[0];
+        await db.query(`INSERT INTO runs(id,player_id,event_id,deck_id,status,profit,completed_at,score_source) VALUES($1,$2,$3,$4,'completed',$5,NOW(),'manual')
+          ON CONFLICT(player_id) DO UPDATE SET status='completed',profit=EXCLUDED.profit,completed_at=NOW(),score_source='manual'`, [randomUUID(), id, event.id, event.snapshot.decks[0].id, aum - initial]);
+        detail = { playerId: id, aum, moic: aum / initial, previousProfit: previous?.profit ?? null };
+      } else {
+        const removed = (await db.query<{ id: string }>("SELECT id FROM players WHERE event_id=$1 AND is_test=TRUE", [event.id])).rows;
+        const ids = removed.map(player => player.id), deleted = new Set(ids);
+        if (!ids.length) return { ok: true, deletedCount: 0 };
+        // Preserve real winners, remove test identities even from archived retries.
+        const draws = (await db.query<LuckyDraw>("SELECT * FROM draws WHERE event_id=$1", [event.id])).rows;
+        for (const draw of draws) {
+          const candidates = draw.candidates.filter(player => !deleted.has(player.playerId)), winners = draw.winners.filter(player => !deleted.has(player.playerId));
+          if (candidates.length !== draw.candidates.length || winners.length !== draw.winners.length) await db.query("UPDATE draws SET candidates=$1,winners=$2,kind=$3 WHERE id=$4", [JSON.stringify(candidates), JSON.stringify(winners), draw.kind === "lucky" && !winners.length ? "lucky-cleared" : draw.kind, draw.id]);
+        }
+        await db.query("DELETE FROM runs WHERE player_id=ANY($1::text[])", [ids]);
+        await db.query("DELETE FROM players WHERE event_id=$1 AND is_test=TRUE", [event.id]);
+        detail = { deletedCount: ids.length };
+      }
+      if (event.status === "frozen") {
+        const rows = await leaderboard({ id: event.id, frozen_rows: null }, db);
+        await db.query("UPDATE events SET frozen_rows=$1 WHERE id=$2", [JSON.stringify(rows), event.id]);
+        // Score changes can move the ranking award boundary. A previous tie draw
+        // must not be used to award places against the updated standings.
+        await db.query("UPDATE draws SET kind='tie-invalidated' WHERE event_id=$1 AND kind='tie'", [event.id]);
+      }
+      await audit(db, event.id, action, detail);
+      return { ok: true, ...detail };
+    }
     if (action === "delete") {
       await db.query("DELETE FROM draws WHERE event_id=$1", [event.id]);
       await db.query("DELETE FROM runs WHERE event_id=$1", [event.id]);
@@ -339,6 +398,7 @@ export async function adminAction(eventId: string | undefined, action: string, p
       if (existing) {
         if (existing.kind === "lucky-cleared") throw new HttpError(409, "抽奖结果已清空，请刷新名单后重新抽奖。");
         if (existing.kind === "lucky-replaced") throw new HttpError(409, "本轮结果已被重抽替换，请刷新中奖名单。");
+        if (existing.kind === "tie-invalidated") throw new HttpError(409, "榜单已调整，请刷新后重新进行并列奖励抽签。");
         return existing;
       }
       const draws = (await db.query<LuckyDraw>("SELECT id,kind,candidates,winners,created_at FROM draws WHERE event_id=$1 AND kind IN ('lucky','tie')", [event.id])).rows;
@@ -354,11 +414,15 @@ export async function adminAction(eventId: string | undefined, action: string, p
         const requested = Number(payload.count ?? event.settings.luckyCount);
         if (!Number.isInteger(requested) || requested < 1 || requested > 100) throw new HttpError(422, "抽取人数须为1至100的整数。");
         if (payload.excludeWinners !== undefined && typeof payload.excludeWinners !== "boolean") throw new HttpError(422, "排除已中奖人员须为布尔值。");
+        const excludeTopN = payload.excludeTopN ?? event.settings.excludeTopN ?? 0, topM = payload.topM ?? event.settings.topM ?? 0;
+        if (typeof excludeTopN !== "number" || !Number.isSafeInteger(excludeTopN) || excludeTopN < 0 || typeof topM !== "number" || !Number.isSafeInteger(topM) || topM < 0) throw new HttpError(422, "排名范围须为非负整数，0表示不限制。");
+        if (topM > 0 && topM <= excludeTopN) throw new HttpError(422, "前M名范围必须大于剔除的前N个玩家。");
         const replaceId = payload.replaceDrawId as string | undefined;
         if (replaceId && !draws.some(draw => draw.id === replaceId && draw.kind === "lucky")) throw new HttpError(409, "本轮结果已更新，请刷新中奖名单后再重抽。");
-        candidates = luckyCandidates(rows, draws, replaceId ? true : payload.excludeWinners !== false, replaceId);
+        candidates = luckyCandidates(rows, draws, replaceId ? true : payload.excludeWinners !== false, replaceId, { excludeTopN, topM });
         count = Math.min(requested, candidates.length);
         if (!count) throw new HttpError(409, "没有可抽取的完成者。");
+        await db.query("UPDATE events SET settings=$1 WHERE id=$2", [JSON.stringify({ ...event.settings, luckyCount: replaceId ? event.settings.luckyCount : requested, excludeTopN, topM }), event.id]);
       }
       const pool = [...candidates], winners: LeaderRow[] = [];
       for (let i = 0; i < count; i++) winners.push(pool.splice(randomInt(pool.length), 1)[0]);
@@ -366,7 +430,7 @@ export async function adminAction(eventId: string | undefined, action: string, p
       // Retain superseded requests for idempotency; only active awards count toward exclusions and exports.
       if (action === "draw" && payload.replaceDrawId) await db.query("UPDATE draws SET kind='lucky-replaced' WHERE id=$1 AND event_id=$2", [payload.replaceDrawId, event.id]);
       const saved = (await db.query<LuckyDraw>("INSERT INTO draws(id,event_id,request_key,kind,candidates,winners) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,kind,candidates,winners,created_at", [draw.id, event.id, payload.key, draw.kind, JSON.stringify(candidates), JSON.stringify(winners)])).rows[0];
-      await audit(db, event.id, payload.replaceDrawId ? "redraw" : action, { drawId: draw.id, replacedDrawId: payload.replaceDrawId, excludeWinners: payload.replaceDrawId ? true : payload.excludeWinners !== false, candidates: candidates.length, winners: winners.map(w => w.playerId) }); return saved;
+      await audit(db, event.id, payload.replaceDrawId ? "redraw" : action, { drawId: draw.id, replacedDrawId: payload.replaceDrawId, excludeWinners: payload.replaceDrawId ? true : payload.excludeWinners !== false, excludeTopN: payload.excludeTopN ?? event.settings.excludeTopN ?? 0, topM: payload.topM ?? event.settings.topM ?? 0, candidates: candidates.length, winners: winners.map(w => w.playerId) }); return saved;
     } else if (action === "recovery") {
       const code = newToken().slice(0, 16);
       const r = await db.query("UPDATE players SET recovery_hash=$1 WHERE id=$2 AND event_id=$3 RETURNING id", [hash(code), payload.playerId, event.id]);

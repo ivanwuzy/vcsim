@@ -25,7 +25,7 @@
 .roster > span { display: inline-flex; align-items: center; gap: 7px; }
 .roster > span:first-child { color: #a9c5ed; }
 .roster svg { color: #7caaff; }
-.stage { position: relative; display: flex; justify-content: center; align-items: center; gap: clamp(18px, 2.3vw, 40px); padding: 34px 8px 28px; min-height: 310px; }
+.stage { position: relative; display: flex; justify-content: center; align-items: center; gap: clamp(18px, 2.3vw, 40px); padding: 24px 8px 18px; min-height: 310px; }
 .stage::before { content: ""; position: absolute; z-index: -1; inset: 65% 8% 0; background: radial-gradient(ellipse at center, #245eff30, transparent 68%); pointer-events: none; }
 .stage::after { content: ""; position: absolute; z-index: -1; left: 5%; right: 5%; bottom: 12px; height: 1px; background: linear-gradient(90deg, transparent, #80a6ee60, transparent); pointer-events: none; }
 .machines { display: grid; grid-template-columns: repeat(var(--columns), minmax(0, 1fr)); align-items: start; gap: clamp(12px, 1.3vw, 22px); width: min(100%, calc(var(--columns) * 235px)); min-width: 0; max-height: min(45vh, 480px); padding: 7px 5px 16px; overflow: auto; scrollbar-width: thin; scrollbar-color: #536b99 transparent; }
@@ -80,13 +80,16 @@
 .controls input[type="number"] { width: 58px; height: 36px; padding: 5px 6px; border: 1px solid #637fa956; border-radius: 4px; background: #0a1425; color: #ebf3ff; text-align: center; font-size: 15px; font-weight: 500; }
 .controls input:disabled { opacity: .55; }
 .controls input[type="checkbox"] { width: 16px; height: 16px; accent-color: #4e87f5; }
+.rangeControls { min-height: 0; padding: 10px 0; margin-top: 0; border-top: 0; gap: 8px 24px; }
+.rangeControls input[type="number"] { width: 76px; }
+.rangeHint { flex-basis: 100%; text-align: center; color: #8199bd; font-size: 11px; line-height: 1.6; margin: 0; }
 .moreControls { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 18px; padding-left: 22px; border-left: 1px solid var(--line); }
 .secondary, .primary { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 39px; padding: 9px 16px; border: 1px solid #6e8eb758; border-radius: 5px; background: #1a294266; color: #c4d4ed; font-size: 13px; font-weight: 500; }
 .primary { border-color: #82b0ff77; background: linear-gradient(135deg, #397ce5, #2452b7); color: #f6f9ff; box-shadow: inset 0 1px 0 #c2dcff33, 0 3px 15px #205cde28; }
 .primary:hover:not(:disabled) { background: #3976d9; }
 .secondary:hover:not(:disabled) { background: #293e60; }
 .primary:disabled, .secondary:disabled { opacity: .45; box-shadow: none; }
-.details { min-height: 28px; padding-top: 7px; }
+.details { min-height: 49px; padding-top: 7px; }
 .hint { text-align: center; font-size: 11px; line-height: 21px; color: #8199bd; margin: 0; }
 .hint button { margin-left: 12px; text-decoration: underline; }
 .footer { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-top: 20px; padding-top: 16px; border-top: 1px solid #86a8e119; font-size: 11px; color: #788eaf; }
@@ -125,16 +128,19 @@
 @media (max-height: 850px) and (min-width: 901px) {
   .dialog { padding-top: 22px; padding-bottom: 18px; }
   .brand { font-size: 30px; }
-  .header { margin-top: 12px; }
-  .header h1 { margin-top: 8px; font-size: 38px; }
+  .header { margin-top: 8px; }
+  .kicker { display: none; }
+  .header h1 { margin-top: 0; font-size: 34px; }
   .header p { margin-top: 8px; }
-  .roster { margin-top: 10px; padding: 8px 2px; }
-  .stage { padding: 16px 8px 12px; min-height: 250px; }
-  .window { height: 130px; }
+  .roster { margin-top: 6px; padding: 6px 2px; }
+  .stage { padding: 8px 8px 6px; min-height: 230px; }
+  .window { height: 110px; }
   .marquee > strong { font-size: 19px; }
   .machineBottom { padding-top: 12px; gap: 7px; }
   .machines { max-height: 300px; }
-  .controls { padding-top: 12px; min-height: 66px; }
+  .controls { padding: 8px 0; min-height: 56px; }
+  .rangeControls { padding: 4px 0; min-height: 0; gap: 4px 24px; }
+  .rangeControls input[type="number"] { height: 32px; }
   .footer { margin-top: 10px; padding-top: 12px; }
 }
 @media (max-width: 900px) {

@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS game_settings (
  id INTEGER PRIMARY KEY CHECK (id=1), content_version TEXT NOT NULL, projects JSONB NOT NULL
 );
 ALTER TABLE game_settings ADD COLUMN IF NOT EXISTS replay_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS is_test BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS score_source TEXT NOT NULL DEFAULT 'game';
 ALTER TABLE events ADD COLUMN IF NOT EXISTS snapshot_revision TEXT NOT NULL DEFAULT '';
 -- Change the cache key in Postgres, including imports, migrations and direct SQL edits.
 CREATE OR REPLACE FUNCTION vc_snapshot_revision() RETURNS TRIGGER AS $$
@@ -72,7 +74,7 @@ async function init() {
 export async function getDb(): Promise<DB> {
   state.ready ??= init(); await state.ready;
   // Hot reload can retain a connection initialized by the previous version.
-  if (state.schemaVersion !== "2026.10-neon-budget") { state.schemaReady = undefined; state.schemaVersion = "2026.10-neon-budget"; }
+  if (state.schemaVersion !== "2026.10-admin-scores") { state.schemaReady = undefined; state.schemaVersion = "2026.10-admin-scores"; }
   state.schemaReady ??= (async () => { if (state.local) await state.local.exec(databaseSchema); else await state.pool!.query(databaseSchema); })();
   try { await state.schemaReady; }
   catch (error) { state.schemaReady = undefined; throw error; }

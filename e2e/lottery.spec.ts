@@ -160,7 +160,7 @@ test("saved requests recover after a lost response and an interrupted animation 
   expect(state.draws).toHaveLength(2);
   await page.reload();
   await page.getByRole("button", { name: "幸运观众抽奖", exact: true }).click();
-  await expect(page.getByTestId("lottery-machine")).toHaveCount(1);
+  await expect(page.getByTestId("lottery-machine")).toHaveCount(5);
   await expect(page.getByTestId("lottery-machine").first()).toHaveAttribute("data-revealed", "true");
   await expect(page.getByRole("button", { name: "摇杆：同步抽取结果" })).toHaveCount(0);
   expect(requests).toHaveLength(3);

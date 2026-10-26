@@ -8,7 +8,7 @@ import type { LeaderRow } from "../lib/service";
 import { LotteryCelebration } from "./lottery-celebration";
 import styles from "./lottery-draw.module.css";
 
-type DrawRequest = { action: "draw"; key: string; count: number; excludeWinners: boolean; replaceDrawId?: string };
+type DrawRequest = { action: "draw"; key: string; count: number; excludeWinners: boolean; replaceDrawId?: string; excludeTopN?: number; topM?: number };
 type Phase = "ready" | "saving" | "rolling" | "done";
 
 function SlotMachine({ index, winner, candidates, spinning, revealed }: { index: number; winner?: LeaderRow; candidates: LeaderRow[]; spinning: boolean; revealed: boolean }) {
@@ -27,7 +27,8 @@ function SlotMachine({ index, winner, candidates, spinning, revealed }: { index:
 
 export function LotteryDraw({ eventId, open, onClose }: { eventId: string; open: boolean; onClose: () => void }) {
   const [state, setState] = useState<LotteryState | null>(null), [loading, setLoading] = useState(false), [error, setError] = useState("");
-  const [count, setCount] = useState(5), [moreCount, setMoreCount] = useState(1), [exclude, setExclude] = useState(true);
+  const [count, setCount] = useState(5), [moreCount, setMoreCount] = useState(5), [exclude, setExclude] = useState(true);
+  const [excludeTopN, setExcludeTopN] = useState("0"), [topM, setTopM] = useState("0");
   const [phase, setPhase] = useState<Phase>("ready"), [revealed, setRevealed] = useState(0), [confirm, setConfirm] = useState(false);
   const [history, setHistory] = useState(false), [preparingMore, setPreparingMore] = useState(false), [pending, setPending] = useState<DrawRequest | null>(null);
   const [celebrating, setCelebrating] = useState(false);
@@ -35,7 +36,9 @@ export function LotteryDraw({ eventId, open, onClose }: { eventId: string; open:
   const pendingRequest = useRef<DrawRequest | null>(null);
   const pendingKey = `vc-lottery-pending:${eventId}`;
   const latest = state?.draws.at(-1), busy = phase === "saving" || phase === "rolling";
-  const pool = state ? luckyCandidates(state.candidates, state.draws, latest ? exclude : true) : [];
+  const range = { excludeTopN: Number(excludeTopN), topM: Number(topM) };
+  const validRange = excludeTopN !== "" && topM !== "" && Number.isSafeInteger(range.excludeTopN) && range.excludeTopN >= 0 && Number.isSafeInteger(range.topM) && range.topM >= 0 && (range.topM === 0 || range.topM > range.excludeTopN);
+  const pool = state && validRange ? luckyCandidates(state.candidates, state.draws, latest ? exclude : true, undefined, range) : [];
   const requestedCount = preparingMore ? moreCount : count;
   const machineCount = phase === "rolling" || !preparingMore && latest ? latest!.winners.length : Math.min(pending?.count ?? requestedCount, pool.length);
   const showWinners = !!latest && !preparingMore && phase !== "saving";
@@ -53,7 +56,7 @@ export function LotteryDraw({ eventId, open, onClose }: { eventId: string; open:
     pendingRequest.current = saved; setPending(saved);
     void api<LotteryState>(`/api/admin/lottery?event=${encodeURIComponent(eventId)}`).then(value => {
       if (cancelled) return;
-      setState(value); setCount(value.defaultCount); setPhase(value.draws.length ? "done" : "ready"); setRevealed(value.draws.at(-1)?.winners.length ?? 0);
+      setState(value); setCount(value.defaultCount); setMoreCount(value.defaultCount); setExclude(true); setExcludeTopN(String(saved?.excludeTopN ?? value.excludeTopN ?? 0)); setTopM(String(saved?.topM ?? value.topM ?? 0)); setPhase(value.draws.length ? "done" : "ready"); setRevealed(value.draws.at(-1)?.winners.length ?? 0);
       if (saved && value.draws.some(draw => draw.request_key === saved!.key)) clearPending();
     }).catch(reason => { if (!cancelled) setError((reason as Error).message); }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -97,8 +100,8 @@ export function LotteryDraw({ eventId, open, onClose }: { eventId: string; open:
   }, [open, confirm, phase, onClose]);
 
   async function start(mode: "initial" | "more" | "redraw") {
-    if (inFlight.current || busy || !state?.locked) return;
-    const body: DrawRequest = pending ?? { action: "draw", key: uuid(), count: mode === "redraw" ? latest!.winners.length : mode === "more" ? moreCount : count, excludeWinners: mode === "more" ? exclude : true, ...(mode === "redraw" ? { replaceDrawId: latest!.id } : {}) };
+    if (inFlight.current || busy || !state?.locked || (!pending && !validRange)) return;
+    const body: DrawRequest = pending ?? { action: "draw", key: uuid(), count: mode === "redraw" ? latest!.winners.length : mode === "more" ? moreCount : count, excludeWinners: mode === "more" ? exclude : true, ...range, ...(mode === "redraw" ? { replaceDrawId: latest!.id } : {}) };
     inFlight.current = true; pendingRequest.current = body; setPhase("saving"); setError(""); setConfirm(false); setPending(body); setCelebrating(false);
     try { sessionStorage.setItem(pendingKey, JSON.stringify(body)); } catch { /* Keep retries in memory. */ }
     try {
@@ -107,7 +110,8 @@ export function LotteryDraw({ eventId, open, onClose }: { eventId: string; open:
       if (!response.ok) { if (response.status < 500) clearPending(); throw new Error(value.error || "抽取失败，请重试。"); }
       const draw = value as LuckyDraw;
       clearPending();
-      setState(current => current && ({ ...current, draws: [...current.draws.filter(item => item.id !== body.replaceDrawId && item.id !== draw.id), draw] }));
+      if (!body.replaceDrawId) setMoreCount(body.count);
+      setState(current => current && ({ ...current, defaultCount: body.replaceDrawId ? current.defaultCount : body.count, excludeTopN: body.excludeTopN ?? current.excludeTopN, topM: body.topM ?? current.topM, draws: [...current.draws.filter(item => item.id !== body.replaceDrawId && item.id !== draw.id), draw] }));
       setPreparingMore(false); setRevealed(0); setPhase("rolling");
     } catch (reason) { setError((reason as Error).message); setPhase(latest ? "done" : "ready"); }
     finally { inFlight.current = false; }
@@ -126,20 +130,26 @@ export function LotteryDraw({ eventId, open, onClose }: { eventId: string; open:
         {!state?.locked && <p className={styles.notice}>请先在主办方工作台停止活动并冻结最终榜单，再开始抽奖。</p>}
         {error && <div className={styles.error} role="alert">{error}<button onClick={() => { setLoading(true); void api<LotteryState>(`/api/admin/lottery?event=${encodeURIComponent(eventId)}`).then(value => { setState(value); setPreparingMore(false); setCelebrating(false); setPhase(value.draws.length ? "done" : "ready"); setRevealed(value.draws.at(-1)?.winners.length ?? 0); if (pending && value.draws.some(draw => draw.request_key === pending.key)) clearPending(); setError(""); }).catch(reason => setError(reason.message)).finally(() => setLoading(false)); }}>刷新名单</button></div>}
         {pending && phase !== "saving" && phase !== "rolling" && <p className={styles.notice}>上次请求尚未确认。点击摇杆同步同一次抽取结果，避免重复抽取。</p>}
+        {state?.locked && <div className={`${styles.controls} ${styles.rangeControls}`}>
+          <label>剔除排名前N个玩家<input type="number" min={0} step={1} value={excludeTopN} disabled={busy || !!pending} onChange={event => setExcludeTopN(event.target.value)} /></label>
+          <label>在前M名玩家中抽奖<input type="number" min={0} step={1} value={topM} disabled={busy || !!pending} onChange={event => setTopM(event.target.value)} /></label>
+          <p className={styles.rangeHint}>{validRange ? `按原榜单顺序，剔除前 ${range.excludeTopN} 个玩家${range.topM ? `，仅在原榜单前 ${range.topM} 名中抽取` : "，其余玩家均可参与"}。N / M 填 0 表示不限制；并列按榜单显示顺序截取。` : "N、M 须为非负整数；M 不为 0 时须大于 N。"}</p>
+        </div>}
         <div className={styles.stage}>
           <div className={styles.machines} style={{ "--columns": Math.min(5, Math.max(1, machineCount)) } as CSSProperties}>
-            {machineCount ? Array.from({ length: machineCount }, (_, index) => <SlotMachine key={`${latest?.id ?? "slots"}-${index}`} index={index} candidates={state?.candidates ?? []} winner={showWinners ? latest?.winners[index] : undefined} spinning={phase === "rolling" && index >= revealed} revealed={showWinners && (phase === "done" || phase === "rolling" && index < revealed)} />) : <div className={styles.empty}><Gift size={48} /><h2>{state?.locked ? "本轮暂无可抽取的观众" : "好运舞台，准备就绪"}</h2><p>{state?.locked ? "可取消排除已中奖人员，开启特别礼品抽奖。" : "锁定名单后，幸运观众将在这里揭晓。"}</p></div>}
+            {machineCount ? Array.from({ length: machineCount }, (_, index) => <SlotMachine key={`${latest?.id ?? "slots"}-${index}`} index={index} candidates={showWinners ? latest!.candidates : pool} winner={showWinners ? latest?.winners[index] : undefined} spinning={phase === "rolling" && index >= revealed} revealed={showWinners && (phase === "done" || phase === "rolling" && index < revealed)} />) : <div className={styles.empty}><Gift size={48} /><h2>{state?.locked ? "本轮暂无可抽取的观众" : "好运舞台，准备就绪"}</h2><p>{state?.locked ? "请检查排名范围和剩余候选人数。" : "锁定名单后，幸运观众将在这里揭晓。"}</p></div>}
           </div>
           <button className={`${styles.lever} ${busy ? styles.pulled : ""}`} aria-label={pending ? "摇杆：同步抽取结果" : "摇杆：开始抽奖"} disabled={loading || busy || !state?.locked || (!pending && (!!latest && !preparingMore || !machineCount))} onClick={() => void start(preparingMore ? "more" : "initial")}><span className={styles.leverBall} /><span className={styles.leverStem} /><span className={styles.leverBase} /><span className={styles.leverLabel}>{phase === "saving" ? "正在抽取" : phase === "rolling" ? "好运转动中" : latest && !preparingMore && !pending ? "本轮已揭晓" : pending ? "同步结果" : "拉动摇杆"}</span></button>
         </div>
         <div className={styles.status} role="status">{phase === "rolling" ? <><Sparkles size={18} />正在揭晓 {revealed} / {latest?.winners.length}<button onClick={finish}>跳过动画</button></> : phase === "saving" ? <><LoaderCircle className="spin" size={18} />正在保存本轮中奖名单…</> : phase === "done" && latest ? <><Gift size={18} />本轮 {latest.winners.length} 位幸运观众已揭晓 · 名单已保存</> : <><Star size={16} />准备好接住这份好运了吗？</>}</div>
         {state?.locked && <div className={styles.controls}>
           {!latest ? <label className={styles.countControl}>抽取人数<input type="number" aria-label="抽取人数" min={1} max={100} value={count} disabled={busy || !!pending} onChange={event => setCount(Math.min(100, Math.max(1, Math.trunc(Number(event.target.value)) || 1)))} /><span>位</span></label> : <>
-            <button className={styles.secondary} disabled={busy || !!pending} onClick={() => setConfirm(true)}><RotateCcw size={16} />重抽本轮</button>
+            <button className={styles.secondary} disabled={busy || !!pending || !validRange} onClick={() => setConfirm(true)}><RotateCcw size={16} />重抽本轮</button>
             <div className={styles.moreControls}><label>再抽<input type="number" aria-label="再抽几个" min={1} max={100} value={moreCount} disabled={busy || !!pending} onChange={event => setMoreCount(Math.min(100, Math.max(1, Math.trunc(Number(event.target.value)) || 1)))} />位</label><label className={styles.exclude}><input type="checkbox" checked={exclude} disabled={busy || !!pending} onChange={event => setExclude(event.target.checked)} />排除已抽中人员</label><button className={styles.primary} disabled={busy || !!pending || !pool.length || preparingMore} onClick={prepareMore}><Plus size={16} />{preparingMore ? "请拉动摇杆" : "抽取更多"}</button></div>
           </>}
         </div>}
         <div className={styles.details}>
+          {state?.locked && <p className={styles.hint}>累计已抽 {state.draws.reduce((sum, draw) => sum + draw.winners.length, 0)} 个名额 · 每轮设为 5 位，连续抽取 4 轮即可完成 20 个奖；勾选“排除已抽中人员”保证跨轮不重复。</p>}
           {!busy && state?.locked && (!latest || preparingMore) && <p className={styles.hint}>可参与 {pool.length} 人{requestedCount > pool.length ? ` · 名额超过候选人数，本轮将抽取 ${pool.length} 人` : ""}{preparingMore && <button onClick={() => { setPreparingMore(false); setPhase("done"); }}>返回本轮名单</button>}</p>}
           {!busy && latest && <div className={styles.history}><button aria-expanded={history} onClick={() => setHistory(value => !value)}>中奖名单 · 共 {state!.draws.length} 轮 / {state!.draws.reduce((sum, draw) => sum + draw.winners.length, 0)} 个名额<ChevronDown size={16} className={history ? styles.flipped : ""} /></button>{history && <div className={styles.historyList}>{state!.draws.map((draw, index) => <section key={draw.id}><h3>第 {index + 1} 轮 <small>{draw.winners.length} 位</small></h3><div>{draw.winners.map(winner => <p key={winner.playerId}><strong>{winner.name}</strong><span>{winner.institution}</span></p>)}</div></section>)}</div>}</div>}
         </div>
