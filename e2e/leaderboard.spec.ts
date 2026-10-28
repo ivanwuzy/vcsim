@@ -112,6 +112,20 @@ test("the podium fits projector viewports, keeps ranks 4–10 fixed and previews
   await expect(page.locator(".contender-rank")).toHaveText(["04", "05", "06", "07", "08", "09", "10"]);
   await expect(page.locator(".contenders-list")).not.toContainText("合伙人 11");
   await expect(page.locator(".pagination-dots")).toHaveCount(0);
+  const previousPage = page.getByRole("button", { name: "榜单上一页" });
+  const nextPage = page.getByRole("button", { name: "榜单下一页" });
+  await expect(previousPage).toBeDisabled();
+  await expect(page.getByRole("navigation", { name: "合伙人榜单翻页" })).toContainText("1 / 3");
+  await nextPage.click();
+  await expect(page.locator(".contender-rank")).toHaveText(["11", "12", "13", "14", "15", "16", "17"]);
+  await page.clock.runFor(12100);
+  await expect(page.locator(".contender-rank")).toHaveText(["11", "12", "13", "14", "15", "16", "17"]);
+  await nextPage.click();
+  await expect(page.locator(".contender-rank")).toHaveText(["18", "19", "20", "21", "22", "23", "24"]);
+  await expect(nextPage).toBeDisabled();
+  await previousPage.click();
+  await previousPage.click();
+  await expect(page.locator(".contender-rank")).toHaveText(["04", "05", "06", "07", "08", "09", "10"]);
   for (const rank of [1, 2, 3]) {
     await page.getByRole("button", { name: "动效预览 临时" }).click();
     await page.getByRole("button", { name: rank === 1 ? "金 · 刷新最高纪录" : `${rank === 2 ? "银" : "铜"} · 新晋第${rank}名` }).click();

@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, Crown, Gift, Maximize, Minimize, Moon, Sparkles, Sun, Trophy } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Crown, Gift, Maximize, Minimize, Moon, Sparkles, Sun, Trophy } from "lucide-react";
 import { fundReturn, newPodiumRecords, type BoardData } from "../lib/leaderboard";
 import { Brand } from "./brand";
 import { MedalCelebration, type Celebration } from "./medal-celebration";
@@ -17,6 +17,7 @@ export default function LiveScreen({ eventId }: { eventId: string }) {
   const [queue, setQueue] = useState<Celebration[]>([]);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [lottery, setLottery] = useState(false);
+  const [contendersPage, setContendersPage] = useState(0);
   const closeLottery = useCallback(() => setLottery(false), []);
   const [rotation, setRotation] = useState(0), [preview, setPreview] = useState(false), [fullscreen, setFullscreen] = useState(false), [fullscreenError, setFullscreenError] = useState("");
   const complete = useCallback(() => setQueue(items => items.slice(1)), []);
@@ -34,7 +35,7 @@ export default function LiveScreen({ eventId }: { eventId: string }) {
   useEffect(() => {
     if (!data) return;
     const records = newPodiumRecords(previous.current, data);
-    if (previous.current?.id !== data.id) { setQueue([]); setRotation(0); }
+    if (previous.current?.id !== data.id) { setQueue([]); setRotation(0); setContendersPage(0); }
     previous.current = data;
     if (records.length) setQueue(items => [...items, ...records.map(record => ({ ...record, initial: data.initial ?? 0, id: ++sequence.current }))]);
   }, [data]);
@@ -70,7 +71,14 @@ export default function LiveScreen({ eventId }: { eventId: string }) {
     return players[(rotation * occupied + offset) % players.length];
   });
   const rest = data?.rows.filter(row => row.rank > 3) ?? [];
-  const visibleRows = rest.filter(row => row.rank <= 10);
+  const firstPageRows = rest.filter(row => row.rank <= 10);
+  const laterRows = rest.filter(row => row.rank > 10);
+  const contendersPages = 1 + Math.ceil(laterRows.length / 7);
+  const currentPage = Math.min(contendersPage, contendersPages - 1);
+  const visibleRows = currentPage === 0 ? firstPageRows : laterRows.slice((currentPage - 1) * 7, currentPage * 7);
+  useEffect(() => {
+    setContendersPage(page => Math.min(page, contendersPages - 1));
+  }, [contendersPages]);
   const status = error ? "连接中断 · 自动重连" : !data ? "正在连接榜单" : data.frozen ? "最终榜单 · 已冻结" : data.status === "open" ? "实时榜单 · 5秒更新" : data.status === "closed" ? "活动已停止 · 保留成绩" : "等待活动启动";
   return <main className="live-screen" data-theme={theme}>
     <header className="live-header"><Brand href="/admin" /><div className="live-event header-right"><span className="event-dot" />{data?.title || "具身创投之夜"}{data?.mode === "demo" && <span className="live-demo">演示活动</span>}</div><div className="live-tools"><button className="live-lottery-toggle" onClick={() => { setPreview(false); setLottery(true); }} aria-haspopup="dialog"><Gift size={17} /><span>幸运观众抽奖</span></button><a href="/admin" aria-label="返回主办方工作台" title="返回主办方工作台"><ArrowLeft size={17} /></a><button className="live-theme-toggle" onClick={toggleTheme} aria-label={theme === "dark" ? "切换为浅色" : "切换为深色"} title={theme === "dark" ? "切换为浅色" : "切换为深色"}>{theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}<span>{theme === "dark" ? "浅色" : "深色"}</span></button><button onClick={toggleFullscreen} aria-label={fullscreen ? "退出全屏" : "全屏展示"} title={fullscreen ? "退出全屏" : "全屏展示"}>{fullscreen ? <Minimize size={17} /> : <Maximize size={17} />}</button></div></header>
@@ -85,13 +93,13 @@ export default function LiveScreen({ eventId }: { eventId: string }) {
           return <PodiumCard key={player?.playerId ?? `vacant-${index}`} player={player} rank={rank} initial={data?.initial ?? 0} tied={!!player && podium.filter(row => row.rank === rank).length > 1} />;
         })}</div>
       </section>
-      <section className="contenders" aria-label="第4到第10名合伙人榜单"><div className="live-section-label"><span>合伙人榜单</span></div>
+      <section className="contenders" aria-label="第4名起合伙人榜单"><div className="live-section-label"><span>合伙人榜单</span></div>
         <div className="contenders-body"><div className="contenders-columns"><span>排名 / 合伙人</span><span>基金最终金额</span></div>
           {visibleRows.length ? <div className="contenders-list">{visibleRows.map(player => {
             const score = fundReturn(player.profit, data?.initial ?? 0);
             return <article className="contender-row" key={player.playerId}><span className="contender-rank">{String(player.rank).padStart(2, "0")}</span><div className="contender-player"><h2 title={player.name}>{player.name}</h2><p title={player.institution}>{player.institution}</p></div><div className="contender-score"><strong>{score.amount}</strong><small>MOIC {score.multiple}</small></div></article>;
           })}</div> : <div className="contenders-empty"><Sparkles size={36} strokeWidth={1} /><h2>{!data ? "榜单正在就位" : !data.rows.length ? "第一份远见，正在路上。" : "下一位合伙人，会是你吗？"}</h2><p>{data?.status === "draft" ? "活动启动后，完成投资即可登榜。" : "基金结算后自动登榜。\n每一个选择，都可能改写这里。"}</p></div>}
-          <div className="contenders-caption"><span>{rest.length ? `共 ${rest.length} 位合伙人追逐下一份回报` : "每一份远见，都值得被看见"}</span></div>
+          <div className="contenders-caption"><span>{rest.length ? `共 ${rest.length} 位合伙人追逐下一份回报` : "每一份远见，都值得被看见"}</span><nav className="contenders-pagination" aria-label="合伙人榜单翻页"><button type="button" aria-label="榜单上一页" disabled={currentPage === 0} onClick={() => setContendersPage(currentPage - 1)}><ChevronLeft size={14} /><span>上一页</span></button><span aria-live="polite">{currentPage + 1} / {contendersPages}</span><button type="button" aria-label="榜单下一页" disabled={currentPage === contendersPages - 1} onClick={() => setContendersPage(currentPage + 1)}><span>下一页</span><ChevronRight size={14} /></button></nav></div>
         </div>
       </section>
     </div>
